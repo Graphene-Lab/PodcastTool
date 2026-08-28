@@ -26,6 +26,8 @@ internal static class PodcastPlanner
         var langName = PodcastScript.LangName(lang);
         var (response, error) = llm.SendQuery(
             $"""
+            Today's date is {DateTime.UtcNow:yyyy-MM-dd} (UTC) — use it as the temporal reference.
+
             Analyze the podcast topic "{topic}" and return a plan as JSON only (no prose, no fences).
 
             1. "needsRecentFacts": true when the episode depends on RECENT or UPCOMING facts and

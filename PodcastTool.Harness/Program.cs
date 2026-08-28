@@ -19,12 +19,13 @@ var selftest = args.Contains("--selftest");
 var sampleOut = Arg(args, "--sample");
 var provider = Arg(args, "--provider") ?? "DeepSeekBridge";
 var podcastName = Arg(args, "--name");
+var language = Arg(args, "--language");
 var topicArgs = new List<string>();
 for (int i = 0; i < args.Length; i++)
 {
     if (args[i].StartsWith("--"))
     {
-        if (args[i] is "--provider" or "--name") i++;   // skip the flag's value
+        if (args[i] is "--provider" or "--name" or "--language") i++;   // skip the flag's value
         continue;
     }
     topicArgs.Add(args[i]);
@@ -98,7 +99,7 @@ if (string.IsNullOrWhiteSpace(topic))
 
 Console.WriteLine($"Topic: {topic} | Podcast: {podcastName ?? "(none)"}");
 var sw = Stopwatch.StartNew();
-var result = tool.GeneratePodcast(topic, podcastName: podcastName);
+var result = tool.GeneratePodcast(topic, language: language, podcastName: podcastName);
 sw.Stop();
 Console.WriteLine();
 Console.WriteLine("────── RESULT ──────");

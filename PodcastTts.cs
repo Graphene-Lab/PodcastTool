@@ -1,6 +1,7 @@
 using KokoroSharp;
 using KokoroSharp.Core;
 using KokoroSharp.Processing;
+using Microsoft.ML.OnnxRuntime;
 
 namespace AIOrchestrator.API;
 
@@ -79,7 +80,7 @@ internal static class PodcastTts
                     .Select(v => v.Name)
                     .OrderBy(n => n, StringComparer.OrdinalIgnoreCase)
                     .ToList();
-                _synth = new KokoroWavSynthesizer(modelPath);
+                _synth = CreateSynthesizer(modelPath);
                 if (_voices.Count == 0)
                 {
                     _unavailableReason = "voices/ contains no Kokoro voices.";
@@ -101,6 +102,28 @@ internal static class PodcastTts
                 _synth?.Dispose();
                 _synth = null;
             }
+        }
+    }
+
+    /// <summary>Creates the synthesizer with CUDA acceleration when the GPU provider is
+    /// available, falling back to the CPU provider otherwise — the plugin must work on
+    /// machines without a CUDA GPU. The CPU fallback is what ships today (KokoroSharp.CPU);
+    /// adding the CUDA runtime (KokoroSharp.GPU.Windows + CUDA Toolkit 12 + cuDNN) enables
+    /// the GPU path automatically.</summary>
+    private static KokoroWavSynthesizer CreateSynthesizer(string modelPath)
+    {
+        try
+        {
+            var gpu = new SessionOptions();
+            gpu.AppendExecutionProvider_CUDA();
+            var synth = new KokoroWavSynthesizer(modelPath, gpu);
+            Log.LogStep("PodcastTts: CUDA execution provider active");
+            return synth;
+        }
+        catch
+        {
+            // CUDA provider missing or CUDA toolkit absent → CPU (the library defaults).
+            return new KokoroWavSynthesizer(modelPath);
         }
     }
 

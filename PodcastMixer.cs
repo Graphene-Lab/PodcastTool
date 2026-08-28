@@ -319,8 +319,9 @@ internal static partial class PodcastMixer
         return samples.ToArray();
     }
 
-    /// <summary>Locates a music asset: the host assets/ folder (PluginUpdater merge target)
-    /// or the plugin's own assets/audio/ folder.</summary>
+    /// <summary>Locates a music asset: the host assets/ folder (PluginUpdater merge target),
+    /// the plugin's own assets/audio/ folder, or — last resort — the embedded resource copy
+    /// (the dev ship target excludes assets/, so the embedded copy is the guarantee).</summary>
     private static string? FindAsset(string fileName)
     {
         var candidates = new[]
@@ -342,7 +343,26 @@ internal static partial class PodcastMixer
                 if (File.Exists(candidate)) return candidate;
             }
         }
-        return null;
+        try
+        {
+            var asm = typeof(PodcastMixer).Assembly;
+            var logical = "PodcastTool.assets.audio." + fileName;
+            using var stream = asm.GetManifestResourceStream(logical);
+            if (stream == null) return null;
+            var dir = Path.Combine(Path.GetTempPath(), "podcasttool-assets");
+            Directory.CreateDirectory(dir);
+            var target = Path.Combine(dir, fileName);
+            if (!File.Exists(target))
+            {
+                using var dst = File.Create(target);
+                stream.CopyTo(dst);
+            }
+            return target;
+        }
+        catch
+        {
+            return null;
+        }
     }
 
     /// <summary>OwnAudioSharp's native FFI must sit in the app base directory (verified
@@ -373,14 +393,23 @@ internal static partial class PodcastMixer
 
         foreach (var dir in dirs)
         {
-            var candidate = Path.Combine(dir, "runtimes", rid, "native", nativeName);
-            if (!File.Exists(candidate)) continue;
-            try
+            // Probe both the runtimes/{rid}/native layout AND the flat plugin root (some
+            // packages drop the native flat into the output).
+            var candidates = new[]
             {
-                File.Copy(candidate, Path.Combine(appBase, nativeName), overwrite: true);
-                return;
+                Path.Combine(dir, "runtimes", rid, "native", nativeName),
+                Path.Combine(dir, nativeName),
+            };
+            foreach (var candidate in candidates)
+            {
+                if (!File.Exists(candidate)) continue;
+                try
+                {
+                    File.Copy(candidate, Path.Combine(appBase, nativeName), overwrite: true);
+                    return;
+                }
+                catch { }
             }
-            catch { }
         }
     }
 

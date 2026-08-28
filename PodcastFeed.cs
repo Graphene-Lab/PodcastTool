@@ -73,6 +73,8 @@ internal static class PodcastFeed
         var settings = new XmlWriterSettings { Indent = true, Encoding = new UTF8Encoding(false) };
         using (var writer = XmlWriter.Create(feedPath, settings))
             doc.Save(writer);
+        var episodes = doc.GetElementsByTagName("item").Count;
+        Log.LogStep($"PodcastFeed: '{feedPath}' updated — {episodes} episode(s), enclosure {entry.Mp3Bytes:N0} bytes");
         return feedPath;
     }
 

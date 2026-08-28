@@ -91,7 +91,8 @@ internal static partial class PodcastContext
                 if (string.IsNullOrWhiteSpace(r.Url) || !seen.Add(NormalizeUrl(r.Url))) continue;
                 var line = r.MdDescription;
                 if (line.Length == 0) continue;
-                raw.Append(line).Append('\n');
+                // The URL rides WITH the description so the full-page pass can find it.
+                raw.Append(line).Append(" (").Append(r.Url).Append(")\n");
                 if (raw.Length >= budgetChars) break;
             }
         }

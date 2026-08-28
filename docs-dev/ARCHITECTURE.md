@@ -138,6 +138,16 @@ If the brief call fails, the fallback is the deduplicated raw material capped at
   irony markers, `[pausa musicale]`/`[breve silenzio]` cues every 150-200 characters, no
   bullets/emoji), the act title + beats + target length, and — except for act 1 — the last
   300 characters of the previous act as a **seam** so the transition reads as one story.
+- The output length is NOT capped with maxToken: truncating mid-act could sever the narrative
+  and the provider's cap enforcement proved unreliable. The model writes each act fully; the
+  episode length is bounded deterministically at the END of the writing phase (AFTER the
+  enrichment — a trim before it would be undone and waste two LLM passes): if the body still
+  overshoots the target, the LAST act is shortened at a sentence boundary (the least
+  destructive cut: the three-act arc stays, only the outro tail shortens). A
+  `TrimToSentenceEnd` pass keeps every act ending cleanly.
+- Every act prompt and the intro state **today's date** (UTC) as the temporal reference — the
+  writer must know whether an event "on 28 August" is today, past or upcoming; the planner and
+  the brief already carry it.
 - The act markers (`[PRIMO ATTO]`, `[SECONDO ATTO]`, `[TERZO ATTO]`) are inserted
   deterministically by the code, not requested from the model.
 - After all acts, the length is measured per act (markers excluded). Acts below 80% of
@@ -172,7 +182,11 @@ markers the writer placed every 150-200 characters thus become real breathing ro
 
 Two CC0 tracks (Open Lo-Fi, CC0-1.0) travel with the plugin under `assets/audio/` and are
 resolved at runtime from the host `assets/` folder: `jingle.mp3` (the sigla, used for its
-first 12 seconds with a fade-out) and `background.mp3` (the bed loop).
+first 12 seconds with a fade-out) and `background.mp3` (the bed loop). They are ALSO embedded
+as assembly resources (`PodcastTool.assets.audio.*`): the dev ship target (`ShipOnePlugin
+Ship`) excludes `assets/`, so the embedded copy is the guarantee that the music exists in
+every deployment (dev ship, release zip, NuGet) — `FindAsset` extracts it to a temp cache
+only when no on-disk copy is found.
 
 ### 7.3 Decoding: OwnAudioSharp.Basic
 

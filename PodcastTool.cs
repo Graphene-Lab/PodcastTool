@@ -22,12 +22,14 @@ public class PodcastTool : BaseAgentTool, IFileTool
     /// <param name="topic">The episode subject. When the subject depends on recent facts or
     /// events, recent news about it is gathered; otherwise general background material is used.</param>
     /// <param name="language">Optional two-letter ISO language for the script and voice
-    /// (e.g. "en", "it"). When omitted, the language of <paramref name="topic"/> is detected.</param>
+    /// (e.g. "en", "it", "fr", "es"). When omitted, the language of <paramref name="topic"/>
+    /// is detected. An invalid value (not a two-letter ISO code) returns an error.</param>
     /// <param name="podcastName">Optional name of the podcast. When provided, the introduction
     /// welcomes the listeners of that podcast by name and the files are saved under
     /// /podcast/&lt;podcastName&gt;/.</param>
-    /// <returns>The sandbox-relative paths of the saved MP3 (to attach to the user reply) and
-    /// script, with their lengths; failures are returned as "Error: ..." with the cause.</returns>
+    /// <returns>The sandbox-relative paths of the saved MP3 (to attach to the user reply),
+    /// script and podcast RSS feed, with their lengths; failures are returned as
+    /// "Error: ..." with the cause.</returns>
     public string GeneratePodcast(string topic, string? language = null, string? podcastName = null)
     {
         var sw = Stopwatch.StartNew();
@@ -42,9 +44,10 @@ public class PodcastTool : BaseAgentTool, IFileTool
             var lang = Utility.DetectLanguage(topic) ?? "en";
             if (!string.IsNullOrWhiteSpace(language))
             {
-                var l = language.Trim().ToLowerInvariant();
-                if (l.Length >= 2 && char.IsLetter(l[0]) && char.IsLetter(l[1]))
-                    lang = l[..2];
+                var normalized = PodcastScript.NormalizeLanguage(language);
+                if (normalized == null)
+                    return $"Error: the 'language' parameter must be a valid two-letter ISO code (e.g. \"en\", \"it\", \"fr\", \"es\") — received \"{language}\", which is not valid. Omit it to use the language of the topic.";
+                lang = normalized;
             }
 
             // 1) Plan: recent-facts judgment + English queries + three-act outline.

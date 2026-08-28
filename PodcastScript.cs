@@ -45,6 +45,10 @@ internal static class PodcastScript
             var beats = act.Beats.Length > 0 ? string.Join("; ", act.Beats) : "(follow the act's narrative arc)";
             var (text, error) = llm.SendQuery(
                 $"""
+                Today's date is {DateTime.UtcNow:yyyy-MM-dd} (UTC) — use it as the temporal
+                reference for any event mentioned (an event "on 28 August" is today, a past or
+                upcoming date is anchored to this day).
+
                 {StyleSpec}
 
                 Episode topic: {topic}.
@@ -58,24 +62,31 @@ internal static class PodcastScript
                 Research brief for the whole episode (use its facts woven into the narrative):
                 {brief}
                 """,
-                useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 9000, temperature: 0.8);
+                useHistory: false, role: LLMUtility.SystemRole.None,
+                // NO maxToken cap: truncating the output mid-act could sever the narrative,
+                // and the provider's cap enforcement proved unreliable. The model writes the
+                // full act; the total length is bounded deterministically afterwards (the
+                // last-act sentence-boundary trim below).
+                maxToken: 9000,
+                temperature: 0.8);
 
             if (error != null || string.IsNullOrWhiteSpace(text))
             {
                 Log.LogStep($"PodcastScript: act {act.Act} failed — {(error is int h ? $"HTTP {h}" : "empty response")}");
                 return null;
             }
+            text = TrimToSentenceEnd(text.Trim());
             if (i > 0) sb.Append('\n').Append(markers[i]).Append('\n');
             else sb.Append(markers[i]).Append('\n');
-            sb.Append(text.Trim());
+            sb.Append(text);
             Log.LogStep($"PodcastScript: act {act.Act} '{act.Title}' → {text.Length:N0} chars (target {act.TargetChars:N0})");
         }
 
         var body = FilterEmoji(sb.ToString()).Trim();
         if (body.Length == 0) return null;
 
-        // Bounded enrichment: acts far below their target are expanded inline (narrative
-        // considerations woven in, same style), at most two rounds over the whole body.
+        // Bounded enrichment FIRST: acts far below their target are expanded inline
+        // (narrative considerations woven in, same style), at most two rounds over the body.
         for (int round = 0; round < 2; round++)
         {
             var expanded = false;
@@ -99,11 +110,42 @@ internal static class PodcastScript
                     useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 9000, temperature: 0.8);
                 if (err == null && !string.IsNullOrWhiteSpace(enriched))
                 {
-                    body = ReplaceAct(body, i, enriched.Trim());
+                    var before = MeasureAct(body, i);
+                    body = ReplaceAct(body, i, StripActMarkers(enriched.Trim()));
+                    Log.LogStep($"PodcastScript: act {act.Act} enriched {before:N0} → {MeasureAct(body, i):N0} chars");
                     expanded = true;
                 }
             }
             if (!expanded) break;
+        }
+
+        // Deterministic length control LAST (AFTER the enrichment — a trim before it would be
+        // undone, wasting two LLM passes): when the body still overshoots the episode target,
+        // shorten the LAST act at a sentence boundary — the least destructive cut (the
+        // three-act arc stays intact; only the outro tail shortens). This is the actual
+        // guarantee of the "about X characters" spec.
+        var wasTrimmed = false;
+        if (body.Length > (int)(targetChars * 1.1))
+        {
+            var last = plan.Acts.Length - 1;
+            var lastLen = ExtractAct(body, last).Length;
+            var room = Math.Max(800, targetChars - (body.Length - lastLen));
+            body = ReplaceAct(body, last, TrimToLength(ExtractAct(body, last), room));
+            wasTrimmed = true;
+            Log.LogStep($"PodcastScript: body trimmed to {body.Length:N0} chars (last act shortened)");
+        }
+
+        // A brutal cut severs the episode's ending: the trimmed third act lost its outro, so
+        // a short closing is appended (a graceful outro is never wrong at the end of an
+        // episode and keeps the narrative from ending mid-flow).
+        if (wasTrimmed)
+        {
+            var outro = GenerateOutro(topic, lang, podcastName: null);
+            if (!string.IsNullOrWhiteSpace(outro))
+            {
+                body += "\n\n" + outro;
+                Log.LogStep($"PodcastScript: outro appended → {body.Length:N0} chars");
+            }
         }
 
         body = FilterEmoji(body).Trim();
@@ -122,6 +164,8 @@ internal static class PodcastScript
         var opening = body.Length > 600 ? body[..600] : body;
         var (text, error) = llm.SendQuery(
             $"""
+            Today's date is {DateTime.UtcNow:yyyy-MM-dd} (UTC) — use it as the temporal reference.
+
             Write a SHORT welcome intro (3 to 5 sentences, at most 700 characters) for a podcast
             episode in {LangName(lang)}. {welcome} Announce the themes that the episode covers.
             The episode opens like this: "{opening}"
@@ -137,7 +181,38 @@ internal static class PodcastScript
                 return intro;
             }
         }
-        return $"Benvenuti. Oggi parliamo di {topic}.";
+        // Language-aware fallback (the model call failed — never leave an English podcast with
+        // an Italian welcome).
+        return lang == "it"
+            ? $"Benvenuti. Oggi parliamo di {topic}."
+            : $"Welcome. Today we talk about {topic}.";
+    }
+
+    /// <summary>Writes a short outro that gracefully closes the episode (used when the
+    /// length trim severed the third act's ending). Language-aware fallback.</summary>
+    internal static string GenerateOutro(string topic, string lang, string? podcastName)
+    {
+        try
+        {
+            var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
+            var (text, error) = llm.SendQuery(
+                $"""
+                Write a SHORT outro (3 to 4 sentences, at most 400 characters) closing a podcast
+                episode about "{topic}" in {LangName(lang)}. Thank the listeners, hint at the
+                next episode and leave a closing thought. {(podcastName is null ? "" : $"Mention that they are listening to \"{podcastName}\".")}
+                Plain flowing prose, no emoji, no markers, no bullets.
+                """,
+                useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 500, temperature: 0.7);
+            if (error == null && !string.IsNullOrWhiteSpace(text))
+            {
+                var outro = FilterEmoji(text).Trim();
+                if (outro.Length > 0) return outro;
+            }
+        }
+        catch { }
+        return lang == "it"
+            ? $"E con questo, l'episodio di oggi volge al termine. Grazie per l'ascolto, e alla prossima puntata."
+            : $"And with that, today's episode comes to an end. Thank you for listening, and see you on the next one.";
     }
 
     /// <summary>Removes emoji and symbols deterministically (no LLM) while keeping the ASCII
@@ -176,6 +251,34 @@ internal static class PodcastScript
             }
         }
         return result.ToString();
+    }
+
+    /// <summary>The two-letter languages the tool can write and speak.</summary>
+    internal static readonly string[] KnownLanguages = { "en", "it", "fr", "es", "de", "pt", "ja", "zh", "ko" };
+
+    /// <summary>Full language names → two-letter code (defensive: some agents send "Spanish"
+    /// instead of "es", and a naive 2-char truncation would produce the wrong "sp").</summary>
+    private static readonly Dictionary<string, string> LanguageNameToCode = new(StringComparer.OrdinalIgnoreCase)
+    {
+        ["italian"] = "it", ["english"] = "en", ["french"] = "fr", ["spanish"] = "es",
+        ["german"] = "de", ["portuguese"] = "pt", ["japanese"] = "ja", ["chinese"] = "zh",
+        ["korean"] = "ko",
+    };
+
+    /// <summary>Normalizes a language argument to a two-letter code (case-insensitive,
+    /// full names accepted); null when not recognized.</summary>
+    internal static string? NormalizeLanguage(string? value)
+    {
+        if (string.IsNullOrWhiteSpace(value)) return null;
+        var v = value.Trim();
+        if (LanguageNameToCode.TryGetValue(v, out var full)) return full;
+        var code = v.ToLowerInvariant();
+        if (code.Length >= 2 && char.IsLetter(code[0]) && char.IsLetter(code[1]))
+        {
+            var two = code[..2];
+            if (KnownLanguages.Contains(two)) return two;
+        }
+        return null;
     }
 
     internal static string LangName(string lang) => lang switch
@@ -224,6 +327,32 @@ internal static class PodcastScript
             : body.Length;
         if (end < 0) end = body.Length;
         return body[..start] + ActMarkers[actIndex] + "\n" + newAct + body[end..];
+    }
+
+    private static string StripActMarkers(string text)
+    {
+        foreach (var m in ActMarkers) text = text.Replace(m, "");
+        return text.Trim();
+    }
+
+    /// <summary>When the output hits the token cap mid-flow, cuts at the last sentence
+    /// boundary so the act ends cleanly (the next act continues from the seam).</summary>
+    private static string TrimToSentenceEnd(string text)
+    {
+        if (text.Length == 0) return text;
+        var last = text[^1];
+        if (last is '.' or '!' or '?' or '…' or '"' or '”' or '»') return text;
+        var cut = text.LastIndexOfAny(['.', '!', '?']);
+        return cut >= text.Length / 2 ? text[..(cut + 1)] : text;
+    }
+
+    /// <summary>Trims text to at most <paramref name="maxChars"/> at the last sentence
+    /// boundary before the limit (a clean cut, never mid-sentence).</summary>
+    private static string TrimToLength(string text, int maxChars)
+    {
+        if (text.Length <= maxChars) return text;
+        var cut = text.LastIndexOfAny(['.', '!', '?', '\n'], maxChars);
+        return cut > maxChars / 2 ? text[..(cut + 1)] : text[..maxChars];
     }
 
     private static string Ordinal(int n) => n switch { 1 => "first", 2 => "second", 3 => "third", _ => n + "th" };

@@ -58,7 +58,9 @@
   <ItemGroup>
     <!-- CC0 music assets (sigla + background loop, from Open Lo-Fi, CC0-1.0): copied into
          the output's assets/audio/ next to the plugin assembly and packed into
-         lib/<tfm>/assets/audio/ so PluginUpdater installs them with the plugin. -->
+         lib/<tfm>/assets/audio/ so PluginUpdater installs them with the plugin. ALSO embedded
+         as resources: the dev ship target (ShipOnePlugin Ship) excludes assets/, so the
+         embedded copy guarantees the music is available in every deployment. -->
     <None Update="Assets\audio\*.mp3">
       <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
       <TargetPath>assets/audio/%(Filename)%(Extension)</TargetPath>
@@ -71,6 +73,8 @@
       <Pack>true</Pack>
       <PackagePath>lib/$(TargetFramework)/assets/audio/CREDITS.md</PackagePath>
     </None>
+    <EmbeddedResource Include="Assets\audio\jingle.mp3" LogicalName="PodcastTool.assets.audio.jingle.mp3" />
+    <EmbeddedResource Include="Assets\audio\background.mp3" LogicalName="PodcastTool.assets.audio.background.mp3" />
   </ItemGroup>
   <ItemGroup>
     <None Update="LICENSE.md">
