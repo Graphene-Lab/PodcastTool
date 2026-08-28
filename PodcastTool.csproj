@@ -91,7 +91,7 @@
   </PropertyGroup>
   <Target Name="CleanOldNuGetPackages" BeforeTargets="GenerateNuspec">
     <CreateItem Include="$(PackageOutputPath)*.nupkg">
-      <Output TaskParameter="ItemName" ItemName="_OldNupkg" />
+      <Output TaskParameter="Include" ItemName="_OldNupkg" />
     </CreateItem>
     <Delete Files="@(_OldNupkg)" />
   </Target>
