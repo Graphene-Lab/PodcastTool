@@ -23,9 +23,12 @@ internal static partial class PodcastMixer
     private const float BackgroundInPause = 0.12f;
 
     /// <summary>Mixes the episode (intro → jingle → body) and encodes the MP3. Returns false
-    /// when the TTS engine or the music assets are unavailable (LastError explains why).</summary>
-    internal static bool Mix(string intro, string body, string lang, string wavPath, string mp3Path)
+    /// when the TTS engine or the music assets are unavailable (LastError explains why);
+    /// <paramref name="durationSeconds"/> receives the actual audio length (mixing + silences,
+    /// from the rendered PCM) for the RSS feed.</summary>
+    internal static bool Mix(string intro, string body, string lang, string wavPath, string mp3Path, out double durationSeconds)
     {
+        durationSeconds = 0;
         LastError = "";
         if (!PodcastTts.IsAvailable)
         {
@@ -183,6 +186,7 @@ internal static partial class PodcastMixer
 
         // 3) MP3: encode the mixed WAV with the pure-managed GroovyMp3 (LAME) encoder, then
         //    drop the bulky WAV intermediate (the MP3 is the deliverable).
+        durationSeconds = (double)totalFrames48 / outRate;
         if (!EncodeMp3(wavPath, mp3Path)) return false;
         try { File.Delete(wavPath); } catch { }
         return true;

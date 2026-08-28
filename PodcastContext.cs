@@ -60,12 +60,24 @@ internal static partial class PodcastContext
 
     /// <summary>Researches the topic and returns the research brief (≤ <paramref name="targetChars"/>).
     /// The raw material is bounded by the 3X budget (empirical: three times the target text).
+    /// <paramref name="userMaterial"/> (the tool's optional contextualMaterial parameter) joins
+    /// the research as a first-class source, processed by the same brief synthesis.
     /// Null when NOTHING could be gathered.</summary>
-    internal static string? Gather(string topic, PodcastPlan plan, int budgetChars, int targetChars)
+    internal static string? Gather(string topic, PodcastPlan plan, int budgetChars, int targetChars, string? userMaterial = null)
     {
         var raw = new StringBuilder(Math.Min(budgetChars, 120_000));
         var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
         var keywords = Keywords(plan.SearchQueries);
+
+        // 0) User-provided material first: it is authoritative for the episode, so the brief
+        //    synthesizer sees it as the primary source (capped to keep the budget sane).
+        if (!string.IsNullOrWhiteSpace(userMaterial))
+        {
+            var userText = userMaterial.Trim();
+            if (userText.Length > budgetChars / 2) userText = userText[..(budgetChars / 2)];
+            raw.Append("# USER-PROVIDED MATERIAL\n").Append(userText).Append('\n');
+            Log.LogStep($"PodcastContext: user material {userText.Length:N0} chars");
+        }
 
         // 1) Web searches: one per English query. For news/event episodes the FIRST query
         //    targets today, the SECOND this week, and the rest are unrestricted — the episode
@@ -183,7 +195,7 @@ internal static partial class PodcastContext
         var entries = new List<(int Score, string Url)>();
         foreach (var line in material.Split('\n'))
         {
-            var m = Regex.Match(line, @"https?://\S+");
+            var m = Regex.Match(line, @"https?://[^\s)]+");
             if (!m.Success) continue;
             entries.Add((Score(line, keywords), m.Value));
         }

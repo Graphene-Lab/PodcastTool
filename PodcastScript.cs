@@ -55,7 +55,9 @@ internal static class PodcastScript
                 You are writing ACT {act.Act} of the episode, in {langName}.
                 Act title: {act.Title}.
                 Story beats for this act: {beats}.
-                Target length for this act: at most {act.TargetChars} characters — aim slightly below the target.
+                Target length for this act: at most {act.TargetChars} characters — aim slightly
+                below the target.
+                {(i == plan.Acts.Length - 1 ? "This is the final act: write concisely — DON'T BE VERBOSE." : "")}
                 {seamInstruction(seam)}
                 Write only this act. Do not add act markers, do not write the intro or the outro.
 
@@ -63,10 +65,9 @@ internal static class PodcastScript
                 {brief}
                 """,
                 useHistory: false, role: LLMUtility.SystemRole.None,
-                // NO maxToken cap: truncating the output mid-act could sever the narrative,
-                // and the provider's cap enforcement proved unreliable. The model writes the
-                // full act; the total length is bounded deterministically afterwards (the
-                // last-act sentence-boundary trim below).
+                // Generous safety cap only: episodes are NEVER cut for length, so the cap must
+                // not be tight enough to sever a full act mid-narrative (the provider's strict
+                // enforcement proved unreliable anyway).
                 maxToken: 9000,
                 temperature: 0.8);
 
@@ -82,11 +83,14 @@ internal static class PodcastScript
             Log.LogStep($"PodcastScript: act {act.Act} '{act.Title}' → {text.Length:N0} chars (target {act.TargetChars:N0})");
         }
 
+        // Episodes are NEVER cut (the operating rule): the length follows the writer — the
+        // "at most N characters" + "don't be verbose" instructions prevent verbosity at the
+        // source. No deterministic trim, no outro repair: the narrative always stays whole.
         var body = FilterEmoji(sb.ToString()).Trim();
         if (body.Length == 0) return null;
 
-        // Bounded enrichment FIRST: acts far below their target are expanded inline
-        // (narrative considerations woven in, same style), at most two rounds over the body.
+        // Bounded enrichment: acts far below their target are expanded inline (narrative
+        // considerations woven in, same style), at most two rounds over the body.
         for (int round = 0; round < 2; round++)
         {
             var expanded = false;
@@ -102,7 +106,9 @@ internal static class PodcastScript
                     shorter than its target ({MeasureAct(body, i)} vs ~{act.TargetChars} characters).
                     Expand it INLINE: add narrative considerations, anecdotes, context and reflection that
                     deepen the existing story beats — keep the same style, do not repeat sentences, do not
-                    add act markers, do not write the intro or outro. Write the full expanded act.
+                    add act markers, do not write the intro or outro. The act must end up AT MOST about
+                    {act.TargetChars} characters — do not overshoot.
+                    Write the full expanded act.
 
                     Current act text:
                     {ExtractAct(body, i)}
@@ -117,37 +123,6 @@ internal static class PodcastScript
                 }
             }
             if (!expanded) break;
-        }
-
-        // Episodes are kept WHOLE (the user's rule: never cut the narrative for the minute).
-        // The only guard is a safety ceiling for pathological over-length: above 1.5x the
-        // target the last act is shortened at a sentence boundary (least destructive point)
-        // landing at 1.3x, then a generated outro closes the episode. Normal episodes
-        // (typically 25-37k characters, 30-45 minutes) are never touched.
-        var wasTrimmed = false;
-        const double fireRatio = 1.5;    // safety ceiling only — pathological over-length
-        const double landRatio = 1.3;    // still leaves a generous length after a cut
-        if (body.Length > (int)(targetChars * fireRatio))
-        {
-            var last = plan.Acts.Length - 1;
-            var lastLen = ExtractAct(body, last).Length;
-            var room = Math.Max(800, (int)(targetChars * landRatio) - (body.Length - lastLen));
-            body = ReplaceAct(body, last, TrimToLength(ExtractAct(body, last), room));
-            wasTrimmed = true;
-            Log.LogStep($"PodcastScript: body trimmed to {body.Length:N0} chars (last act shortened)");
-        }
-
-        // A brutal cut severs the episode's ending: the trimmed third act lost its outro, so
-        // a short closing is appended (a graceful outro is never wrong at the end of an
-        // episode and keeps the narrative from ending mid-flow).
-        if (wasTrimmed)
-        {
-            var outro = GenerateOutro(topic, lang, podcastName: null);
-            if (!string.IsNullOrWhiteSpace(outro))
-            {
-                body += "\n\n" + outro;
-                Log.LogStep($"PodcastScript: outro appended → {body.Length:N0} chars");
-            }
         }
 
         body = FilterEmoji(body).Trim();
@@ -188,33 +163,6 @@ internal static class PodcastScript
         return lang == "it"
             ? $"Benvenuti. Oggi parliamo di {topic}."
             : $"Welcome. Today we talk about {topic}.";
-    }
-
-    /// <summary>Writes a short outro that gracefully closes the episode (used when the
-    /// length trim severed the third act's ending). Language-aware fallback.</summary>
-    internal static string GenerateOutro(string topic, string lang, string? podcastName)
-    {
-        try
-        {
-            var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
-            var (text, error) = llm.SendQuery(
-                $"""
-                Write a SHORT outro (3 to 4 sentences, at most 400 characters) closing a podcast
-                episode about "{topic}" in {LangName(lang)}. Thank the listeners, hint at the
-                next episode and leave a closing thought. {(podcastName is null ? "" : $"Mention that they are listening to \"{podcastName}\".")}
-                Plain flowing prose, no emoji, no markers, no bullets.
-                """,
-                useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 500, temperature: 0.7);
-            if (error == null && !string.IsNullOrWhiteSpace(text))
-            {
-                var outro = FilterEmoji(text).Trim();
-                if (outro.Length > 0) return outro;
-            }
-        }
-        catch { }
-        return lang == "it"
-            ? $"E con questo, l'episodio di oggi volge al termine. Grazie per l'ascolto, e alla prossima puntata."
-            : $"And with that, today's episode comes to an end. Thank you for listening, and see you on the next one.";
     }
 
     /// <summary>Removes emoji and symbols deterministically (no LLM) while keeping the ASCII
@@ -346,15 +294,6 @@ internal static class PodcastScript
         if (last is '.' or '!' or '?' or '…' or '"' or '”' or '»') return text;
         var cut = text.LastIndexOfAny(['.', '!', '?']);
         return cut >= text.Length / 2 ? text[..(cut + 1)] : text;
-    }
-
-    /// <summary>Trims text to at most <paramref name="maxChars"/> at the last sentence
-    /// boundary before the limit (a clean cut, never mid-sentence).</summary>
-    private static string TrimToLength(string text, int maxChars)
-    {
-        if (text.Length <= maxChars) return text;
-        var cut = text.LastIndexOfAny(['.', '!', '?', '\n'], maxChars);
-        return cut > maxChars / 2 ? text[..(cut + 1)] : text[..maxChars];
     }
 
     private static string Ordinal(int n) => n switch { 1 => "first", 2 => "second", 3 => "third", _ => n + "th" };

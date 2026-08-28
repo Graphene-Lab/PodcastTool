@@ -80,7 +80,7 @@ if (sampleOut != null)
         Running on your own hardware, under your own control.
         """;
     var wav = Path.ChangeExtension(sampleOut, ".wav");
-    var ok = PodcastMixer.Mix(intro, body, "en", wav, sampleOut);
+    var ok = PodcastMixer.Mix(intro, body, "en", wav, sampleOut, out _);
     Console.WriteLine(ok ? $"Sample OK: {sampleOut}" : $"Sample FAILED: {PodcastMixer.LastError}");
     return;
 }
@@ -143,7 +143,7 @@ static void RunSelftest(PodcastTool tool)
     var wav = Path.Combine(Path.GetTempPath(), "podcasttool-selftest.wav");
     var mp3 = Path.Combine(Path.GetTempPath(), "podcasttool-selftest.mp3");
     if (File.Exists(mp3)) File.Delete(mp3);
-    var ok = PodcastMixer.Mix(shortIntro, shortBody, "en", wav, mp3);
+    var ok = PodcastMixer.Mix(shortIntro, shortBody, "en", wav, mp3, out _);
     if (ok && File.Exists(mp3))
     {
         var info = new FileInfo(mp3);

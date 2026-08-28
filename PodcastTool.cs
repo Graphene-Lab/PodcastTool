@@ -29,10 +29,13 @@ public class PodcastTool : BaseAgentTool, IFileTool
     /// <param name="podcastName">Optional name of the podcast. When provided, the introduction
     /// welcomes the listeners of that podcast by name and the files are saved under
     /// /podcast/&lt;podcastName&gt;/.</param>
+    /// <param name="contextualMaterial">If necessary you can pass some text that will be used
+    /// as material to create the podcast (it can be provided by the user as a result of a
+    /// search), it is an optional parameter. The text joins the gathered research context.</param>
     /// <returns>The sandbox-relative paths of the saved MP3 (to attach to the user reply),
     /// script and podcast RSS feed, with their lengths; failures are returned as
     /// "Error: ..." with the cause.</returns>
-    public string GeneratePodcast(string topic, string? language = null, string? podcastName = null)
+    public string GeneratePodcast(string topic, string? language = null, string? podcastName = null, string? contextualMaterial = null)
     {
         var sw = Stopwatch.StartNew();
         Log.LogStep($"PodcastTool: generating podcast about '{topic}' (lang={language ?? "auto"}, name={podcastName ?? "none"})");
@@ -60,7 +63,8 @@ public class PodcastTool : BaseAgentTool, IFileTool
                 return "Error: the language model did not produce an episode plan. Retry later.";
 
             // 2) Research + 3) brief (≤ X) — the raw context never enters the writing prompt.
-            var brief = PodcastContext.Gather(topic, plan, budgetChars, targetChars);
+            //    The user-provided contextualMaterial joins the research as a first-class source.
+            var brief = PodcastContext.Gather(topic, plan, budgetChars, targetChars, contextualMaterial);
             if (string.IsNullOrWhiteSpace(brief))
                 return "Error: no information about this topic could be gathered. Retry later or choose a broader topic.";
 
@@ -89,11 +93,12 @@ public class PodcastTool : BaseAgentTool, IFileTool
             var mp3Agent = "";
             var feedAgent = "";
             var audioNote = "";
+            double audioSeconds = 0;
             try
             {
                 var wavPath = Path.Combine(dir, fileBase + ".wav");
                 var mp3Path = Path.Combine(dir, fileBase + ".mp3");
-                if (PodcastMixer.Mix(intro, body, lang, wavPath, mp3Path))
+                if (PodcastMixer.Mix(intro, body, lang, wavPath, mp3Path, out audioSeconds))
                 {
                     GitSupport.Snapshot(mp3Path, $"PodcastTool: audio for '{topic}'");
                     mp3Agent = SandboxPath.ToAgent(mp3Path);
@@ -106,7 +111,7 @@ public class PodcastTool : BaseAgentTool, IFileTool
                             Description: intro,
                             Mp3FileName: Path.GetFileName(mp3Path),
                             Mp3Bytes: new FileInfo(mp3Path).Length,
-                            DurationSeconds: estMinutes * 60),
+                            DurationSeconds: (int)Math.Round(audioSeconds)),
                         podcastTitle: string.IsNullOrWhiteSpace(podcastName) ? topic : podcastName,
                         language: lang);
                     GitSupport.Snapshot(feedPath, $"PodcastTool: feed for '{topic}'");
@@ -128,7 +133,10 @@ public class PodcastTool : BaseAgentTool, IFileTool
                 : "Podcast created: script only (audio unavailable)";
             result += $", script at {SandboxPath.ToAgent(scriptPath)}";
             if (feedAgent.Length > 0) result += $", RSS feed at {feedAgent}";
-            result += $". Length: {chars} characters (about {estMinutes} minutes of speech).";
+            result += $". Length: {chars} characters";
+            result += audioSeconds > 0
+                ? $" ({audioSeconds / 60:F0} minutes of audio)."
+                : $" (about {estMinutes} minutes of speech).";
             result += audioNote;
             result += $" Generated in {sw.Elapsed.TotalSeconds:F0} seconds.";
             Log.LogStep($"PodcastTool: done — {chars} chars in {sw.Elapsed.TotalSeconds:F0}s");
