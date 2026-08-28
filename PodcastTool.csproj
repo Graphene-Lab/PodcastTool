@@ -1,0 +1,102 @@
+<Project Sdk="Microsoft.NET.Sdk">
+  <PropertyGroup>
+    <TargetFramework>net10.0</TargetFramework>
+    <OutputType>Library</OutputType>
+    <LangVersion>latest</LangVersion>
+    <Nullable>enable</Nullable>
+    <ImplicitUsings>enable</ImplicitUsings>
+    <GenerateDocumentationFile>True</GenerateDocumentationFile>
+    <!-- Plugin binaries must be OS-neutral: AnyCPU and NO RuntimeIdentifier. -->
+    <PlatformTarget>AnyCPU</PlatformTarget>
+    <Papyrine_SponsorshipLicenseIgnored>true</Papyrine_SponsorshipLicenseIgnored>
+    <Configurations>Debug;Release;Test</Configurations>
+    <PackageId>Graphene.PodcastTool</PackageId>
+    <Version>$([System.DateTime]::Now.ToString("1.yy.MM.dd"))</Version>
+    <Description>Podcast agent tool for AIOrchestrator: generates a ~30-minute narrated podcast episode (narrative script + mixed audio) from recent web and international news-feed research.</Description>
+    <PackageReadmeFile>README.md</PackageReadmeFile>
+    <PackageLicenseFile>LICENSE.md</PackageLicenseFile>
+    <PackageRequireLicenseAcceptance>False</PackageRequireLicenseAcceptance>
+    <Copyright>Andrea Bruno</Copyright>
+    <RepositoryUrl>https://github.com/Graphene-Lab/PodcastTool</RepositoryUrl>
+    <PackageTags>agent;tool;podcast;tts;audio;news;rss;llm;automation</PackageTags>
+    <DefaultItemExcludes>$(DefaultItemExcludes);PodcastTool.Harness\bin\**;PodcastTool.Harness\obj\**</DefaultItemExcludes>
+  </PropertyGroup>
+  <!-- Runtime plugin identity: AIOrchestrator.PluginUpdater reads these assembly metadata
+       attributes to know which NuGet package and version a loaded plugin comes from. -->
+  <ItemGroup>
+    <AssemblyMetadata Include="NuGetPackageId" Value="Graphene.PodcastTool" />
+    <AssemblyMetadata Include="NuGetPackageVersion" Value="$(Version)" />
+  </ItemGroup>
+  <!-- Dual-reference pattern (as in AIOrchestrator): the local sibling project wins when
+       present (solution builds); otherwise the NuGet package (1.* floating = always latest)
+       is restored — required for CI/standalone builds where the sibling sources are absent. -->
+  <ItemGroup>
+    <ProjectReference Include="..\AIOrchestrator\AIOrchestrator.csproj" Condition="Exists('..\AIOrchestrator\AIOrchestrator.csproj')" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- Nested test projects must not compile into the library (AGENT_TOOLS_GUIDE §5). -->
+    <Compile Remove="PodcastTool.Harness\**\*.cs" />
+  </ItemGroup>
+  <ItemGroup>
+    <PackageReference Include="Graphene.AIOrchestrator" Version="1.*" />
+    <!-- OwnAudioSharp.Basic: cross-platform audio engine (decode/resample/read of the CC0
+         jingle and background loop; native ownaudio_ffi per-RID ships in the plugin zip and
+         is deployed to the host app base at runtime). The full OwnAudioSharp variant pulls
+         Avalonia (waveform UI) — Basic is the no-UI audio-only variant of the same family. -->
+    <PackageReference Include="OwnAudioSharp.Basic" Version="4.0.6" />
+    <!-- RSS/Atom parsing for the international news feeds (managed-only, no natives). -->
+    <PackageReference Include="System.ServiceModel.Syndication" Version="9.0.5" />
+  </ItemGroup>
+  <ItemGroup>
+    <!-- CC0 music assets (sigla + background loop, from Open Lo-Fi, CC0-1.0): copied into
+         the output's assets/audio/ next to the plugin assembly and packed into
+         lib/<tfm>/assets/audio/ so PluginUpdater installs them with the plugin. -->
+    <None Update="Assets\audio\*.mp3">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>assets/audio/%(Filename)%(Extension)</TargetPath>
+      <Pack>true</Pack>
+      <PackagePath>lib/$(TargetFramework)/assets/audio/%(Filename)%(Extension)</PackagePath>
+    </None>
+    <None Update="Assets\audio\CREDITS.md">
+      <CopyToOutputDirectory>PreserveNewest</CopyToOutputDirectory>
+      <TargetPath>assets/audio/CREDITS.md</TargetPath>
+      <Pack>true</Pack>
+      <PackagePath>lib/$(TargetFramework)/assets/audio/CREDITS.md</PackagePath>
+    </None>
+  </ItemGroup>
+  <ItemGroup>
+    <None Update="LICENSE.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+    <None Update="README.md">
+      <Pack>True</Pack>
+      <PackagePath>\</PackagePath>
+    </None>
+  </ItemGroup>
+  <!-- Date-based auto version + NuGet publishing, same mechanism as AIOrchestrator.
+       Local/VS: dotnet pack publishes with the NuGetApiKey env var; CI: publish.yml on tag. -->
+  <Target Name="SetPackageVersion" DependsOnTargets="Build">
+    <PropertyGroup>
+      <PackageVersion>$(Version)</PackageVersion>
+    </PropertyGroup>
+  </Target>
+  <PropertyGroup>
+    <NuGetSource Condition="'$(NuGetSource)' == ''">https://api.nuget.org/v3/index.json</NuGetSource>
+  </PropertyGroup>
+  <Target Name="CleanOldNuGetPackages" BeforeTargets="GenerateNuspec">
+    <CreateItem Include="$(PackageOutputPath)*.nupkg">
+      <Output TaskParameter="ItemName" ItemName="_OldNupkg" />
+    </CreateItem>
+    <Delete Files="@(_OldNupkg)" />
+  </Target>
+  <Target Name="PublishPackageToNuGet" AfterTargets="Pack" Condition="'$(SkipNuGetPush)' != 'true'">
+    <Error Condition="'$(NuGetApiKey)' == ''" Text="NuGetApiKey env var not set: run `setx NuGetApiKey &lt;key&gt;` and restart Visual Studio." />
+    <CreateItem Include="$(PackageOutputPath)*.nupkg">
+      <Output TaskParameter="Include" ItemName="_NuGetPackageToPush" />
+    </CreateItem>
+    <Error Condition="'@(_NuGetPackageToPush)' == ''" Text="No package found in $(PackageOutputPath): pack produced no expected file." />
+    <Message Importance="High" Text="Publishing %(_NuGetPackageToPush.Identity) to $(NuGetSource) ..." />
+    <Exec Command="dotnet nuget push &quot;%(_NuGetPackageToPush.Identity)&quot; --api-key &quot;$(NuGetApiKey)&quot; --source &quot;$(NuGetSource)&quot; --skip-duplicate" />
+  </Target>
+</Project>
