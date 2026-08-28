@@ -4,10 +4,10 @@ using System.Text.RegularExpressions;
 namespace AIOrchestrator.API;
 
 /// <summary>Internal: renders the podcast audio. The narration is synthesized sentence by
-/// sentence with the shared <see cref="KokoroTts"/> engine; the CC0 jingle and background
-/// loop are decoded and resampled to 48 kHz stereo with OwnAudioSharp (FileSource); the three
-/// streams are then mixed sample by sample (deterministic, fast, cross-platform) and written
-/// as a 48 kHz stereo 16-bit WAV.</summary>
+/// sentence with the plugin-local <see cref="PodcastTts"/> engine; the CC0 jingle and
+/// background loop are decoded and resampled to 48 kHz stereo with OwnAudioSharp (FileSource);
+/// the three streams are then mixed sample by sample (deterministic, fast, cross-platform)
+/// and written as a 48 kHz stereo 16-bit WAV.</summary>
 internal static partial class PodcastMixer
 {
     /// <summary>Human-readable reason when <see cref="Mix"/> fails (kept for the tool result).</summary>
@@ -21,9 +21,9 @@ internal static partial class PodcastMixer
     internal static bool Mix(string script, string lang, string wavPath)
     {
         LastError = "";
-        if (!KokoroTts.IsAvailable)
+        if (!PodcastTts.IsAvailable)
         {
-            LastError = KokoroTts.UnavailableReason;
+            LastError = PodcastTts.UnavailableReason;
             return false;
         }
 
@@ -31,7 +31,7 @@ internal static partial class PodcastMixer
         if (!TryLoadMusic(out var jingle, out var background))
             return false;
 
-        var sampleRate = KokoroTts.SampleRate;             // 24 kHz mono narration
+        var sampleRate = PodcastTts.SampleRate;              // 24 kHz mono narration
         const int outRate = 48000;                          // output: 48 kHz stereo
         var jingleDuration = (double)jingle.Length / (2 * 2) / outRate;   // stereo int16 frames → seconds
 
@@ -91,7 +91,7 @@ internal static partial class PodcastMixer
             if (speakable.Length == 0) continue;
             foreach (var sentence in VoiceConversation.SplitSentences(speakable))
             {
-                var pcm = KokoroTts.SynthesizePcm(sentence, lang);
+                var pcm = PodcastTts.SynthesizePcm(sentence, lang);
                 if (pcm == null || pcm.Length == 0) continue;
                 narration.AddRange(pcm);
                 currentSec += (double)pcm.Length / 2 / sampleRate;

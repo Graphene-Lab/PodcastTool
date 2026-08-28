@@ -39,6 +39,11 @@
   </ItemGroup>
   <ItemGroup>
     <PackageReference Include="Graphene.AIOrchestrator" Version="1.*" />
+    <!-- Kokoro neural TTS (plugin-local engine, PodcastTts.cs — the shared AIOrchestrator
+         KokoroTts will replace it once Graphene.AIOrchestrator ≥ 1.26.08.29 is published).
+         Only the managed dlls travel with the plugin; kokoro.onnx + voices/ are resolved
+         from the HOST app base at runtime. -->
+    <PackageReference Include="KokoroSharp.CPU" Version="0.8.4" />
     <!-- OwnAudioSharp.Basic: cross-platform audio engine (decode/resample/read of the CC0
          jingle and background loop; native ownaudio_ffi per-RID ships in the plugin zip and
          is deployed to the host app base at runtime). The full OwnAudioSharp variant pulls
