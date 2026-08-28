@@ -74,19 +74,30 @@ jobs:
           import json, os, collections
           assets = json.load(open("obj/project.assets.json"))
           targets = assets["targets"][next(iter(assets["targets"]))]
+          # The closure is computed by PACKAGE NAME (not name+version): NuGet can resolve a
+          # dependency to a version other than the one the parent nuspec declares, and the
+          # name-only match keeps the whole AIOrchestrator graph (incl. e.g. LibGit2Sharp's
+          # native binaries package) inside the host contract regardless of version drift.
+          by_name = collections.defaultdict(list)
+          for key in targets:
+              name, _, _ = key.partition("/")
+              by_name[name].append(key)
           closed, queue = set(), collections.deque()
           for key in targets:
               if key.startswith("Graphene.AIOrchestrator/"):
-                  queue.append(key)
+                  queue.append(key.partition("/")[0])
           while queue:
-              pkg = queue.popleft()
-              if pkg in closed:
+              name = queue.popleft()
+              if name in closed:
                   continue
-              closed.add(pkg)
-              for dep, ver in targets.get(pkg, {}).get("dependencies", {}).items():
-                  queue.append(dep + "/" + ver)
+              closed.add(name)
+              for key in by_name.get(name, []):
+                  for dep in targets.get(key, {}).get("dependencies", {}):
+                      if dep not in closed:
+                          queue.append(dep)
           for key in sorted(targets):
-              if key in closed:
+              name = key.partition("/")[0]
+              if name in closed:
                   continue
               print(key)
               for rel in targets.get(key, {}).get("runtime", {}):
