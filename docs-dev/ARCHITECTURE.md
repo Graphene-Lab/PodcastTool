@@ -176,8 +176,17 @@ The saved `.md` script is: `intro` + `[SIGLA]` + `body`.
 
 The narration is synthesized sentence by sentence (`VoiceConversation.SplitSentences`) by
 the plugin-local `PodcastTts` engine (Kokoro, 24 kHz mono int16) — see the migration note
-below. The body's `[markers]` become silences (0.4-1.0 s) instead of speech; the cue
-markers the writer placed every 150-200 characters thus become real breathing room.
+below. The input is normalized before synthesis: canonical apostrophes (every Unicode
+apostrophe variant → U+0027 — verified: the typographic ’ breaks the Italian elision
+"l'amico", the ASCII apostrophe elides correctly) plus the speakable pipeline. The engine
+tries the CUDA provider first and falls back to CPU automatically (it works on machines with
+and without a CUDA GPU — see `AIOrchestrator/docs/TTS-CUDA-ACCELERATION.md` for the install
+and the PATH settings). The body's `[markers]` become silences (0.4-1.0 s) instead of speech.
+
+**Benchmark (GTX 1650 Ti, i7-10750H, 2026-08-28)** — long-form synthesis (356 s of audio):
+CPU (default 8 threads) x2.12 realtime; **CUDA (12.8 + cuDNN 9.7) x3.20 realtime** (~1.5x
+faster). CPU thread count 4/8/12 shows no scaling (12 threads is worse — oversubscription).
+
 
 ### 7.2 Music assets
 

@@ -42,6 +42,7 @@ internal static class PodcastTts
     {
         EnsureInitialized();
         if (_synth == null) return null;
+        text = NormalizeApostrophes(text);
         if (string.IsNullOrEmpty(text)) return Array.Empty<byte>();
 
         var voice = ResolveVoice(lang);
@@ -51,6 +52,20 @@ internal static class PodcastTts
         {
             return _synth.Synthesize(text, voice);
         }
+    }
+
+    /// <summary>Canonical apostrophes → U+0027. Verified empirically on Kokoro: the phonemizer
+    /// elides "l'amico" only with the ASCII apostrophe; the typographic ’/‘ are pronounced as
+    /// a separate letter (the reported bug). Local copy of Utility.NormalizeForTts — migrate
+    /// when Graphene.AIOrchestrator ≥ 1.26.08.29 ships it.</summary>
+    private static string NormalizeApostrophes(string text)
+    {
+        if (text.IndexOfAny(['\u2019', '\u2018', '\u02BC', '\u2032', '\u2033', '\uFF07']) < 0) return text;
+        return string.Create(text.Length, text, static (span, src) =>
+        {
+            for (int i = 0; i < src.Length; i++)
+                span[i] = src[i] is '\u2019' or '\u2018' or '\u02BC' or '\u2032' or '\u2033' or '\uFF07' ? '\'' : src[i];
+        });
     }
 
     private static void EnsureInitialized()
