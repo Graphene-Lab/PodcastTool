@@ -39,8 +39,16 @@ generate_podcast(topic, language?, podcastName?)
 - `podcastName` (optional): the introduction welcomes the listeners of that podcast by name.
 
 The script starts with a short introduction announcing the covered themes, then the `[SIGLA]`
-marker plays the jingle, then the episode proper. Failures return `Error: ...` with the cause;
-the audio part is skipped (with a note) when the host lacks the TTS assets.
+marker plays the jingle, then the episode proper. The audio is saved as an **MP3** together
+with an **RSS 2.0 feed** (iTunes-compatible, one `<item>` per episode) under
+`/podcast/<podcast-or-topic>/`. Failures return `Error: ...` with the cause; the audio part is
+skipped (with a note) when the host lacks the TTS assets.
+
+## Architecture
+
+The full design — the news-vs-evergreen judgment, the 3X context budget and research brief,
+the outline-first writing with per-act enrichment, the deterministic ducked mix and the MP3
+encoding — is documented in [docs-dev/ARCHITECTURE.md](docs-dev/ARCHITECTURE.md).
 
 ## Music assets (CC0)
 

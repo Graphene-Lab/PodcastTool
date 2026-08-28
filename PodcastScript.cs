@@ -2,13 +2,14 @@ using System.Text;
 
 namespace AIOrchestrator.API;
 
-/// <summary>Internal: writes the podcast script through the LLM following the narrative style
-/// spec, in chunks (providers cap the output length), then applies the deterministic emoji
-/// filter. The result is a continuous storytelling text — no bullet lists, no markdown
-/// headings, only the [markers] that drive the TTS and the mixing.</summary>
+/// <summary>Internal: writes the podcast body act by act from the plan's outline (length
+/// predictable, arc coherent) with a bounded per-act enrichment fallback, then the separate
+/// welcome intro that announces the themes the body ACTUALLY covers. The text follows the
+/// narrative style spec — continuous prose, no bullet lists, only the [markers] that drive the
+/// TTS and the mixing; emoji are removed deterministically.</summary>
 internal static class PodcastScript
 {
-    /// <summary>The full narrative style spec given to the model on every chunk.</summary>
+    /// <summary>The full narrative style spec given to the model on every act.</summary>
     private const string StyleSpec = """
         Write the script for a podcast episode of about thirty minutes, meant to be read by a text-to-speech voice.
         The style must be narrative and engaging, structured as a dramatic arc — never as a list of facts.
@@ -19,74 +20,124 @@ internal static class PodcastScript
         - Make irony and self-irony explicit with phrases like "as absurd as it sounds" or "picture the scene".
         - Write rhetorical questions as real questions, ending with a question mark.
         - Alternate dense factual sections with reflective, descriptive ones to create rhythm.
-        - Insert musical or silence cues every ten to twelve seconds of speech, like [pausa musicale] or [breve silenzio], to break the artificial voice flow.
+        - Insert musical or silence cues like [pausa musicale] or [breve silenzio] every 150-200
+          characters of speech (about every 10-12 seconds) to break the artificial voice flow —
+          the cues are a REQUIREMENT, place them densely and regularly.
         - Repeat key concepts with slightly different words a few minutes apart to emphasize them.
-        - Structure the episode in three acts, marking the transitions with [PRIMO ATTO], [SECONDO ATTO], [TERZO ATTO] (these titles are never read aloud).
-        - First minutes: the hook and a preview of the theme.
-        - First act: expand the problem with an anecdote and a first twist.
-        - Second act: deepen with a second revelation and an ironic counterpoint.
-        - Third act: build to the climax, then resolve or end on a cliffhanger, and close with a reflection that gives meaning to the journey.
-        - Last minutes: the outro — a farewell, a call to action, and a hint at the next episode.
         - Speak as if to a single person: conversational and intimate, without imitating human improvisation.
         - Every sentence must be clear and self-contained: a synthetic voice cannot fix ambiguity with intonation.
-        - The script must start with a brief introduction that announces the themes covered, then the marker [SIGLA] (the jingle plays here), then the episode proper.
         - NO bullet lists, NO numbered lists, NO markdown headings, NO bold, NO emoji, NO links: pure continuous prose with the [markers] only.
         """;
 
-    /// <summary>Generates the script in chunks until the target length is reached (or the
-    /// model stops producing). Returns null when the first chunk fails.</summary>
-    internal static string? Generate(string topic, string lang, string? podcastName, string context, int targetChars = 25000)
+    /// <summary>Writes the body act by act (the act markers are added deterministically by the
+    /// caller). Returns null when the first act fails.</summary>
+    internal static string? Generate(string topic, string lang, string brief, PodcastPlan plan, int targetChars)
+    {
+        var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
+        var langName = LangName(lang);
+        var sb = new StringBuilder();
+        string[] markers = { "[PRIMO ATTO]", "[SECONDO ATTO]", "[TERZO ATTO]" };
+
+        for (int i = 0; i < plan.Acts.Length; i++)
+        {
+            var act = plan.Acts[i];
+            var seam = sb.Length > 0 ? sb.ToString()[^Math.Min(300, sb.Length)..] : "";
+            var beats = act.Beats.Length > 0 ? string.Join("; ", act.Beats) : "(follow the act's narrative arc)";
+            var (text, error) = llm.SendQuery(
+                $"""
+                {StyleSpec}
+
+                Episode topic: {topic}.
+                You are writing ACT {act.Act} of the episode, in {langName}.
+                Act title: {act.Title}.
+                Story beats for this act: {beats}.
+                Target length for this act: at most {act.TargetChars} characters — aim slightly below the target.
+                {seamInstruction(seam)}
+                Write only this act. Do not add act markers, do not write the intro or the outro.
+
+                Research brief for the whole episode (use its facts woven into the narrative):
+                {brief}
+                """,
+                useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 9000, temperature: 0.8);
+
+            if (error != null || string.IsNullOrWhiteSpace(text))
+            {
+                Log.LogStep($"PodcastScript: act {act.Act} failed — {(error is int h ? $"HTTP {h}" : "empty response")}");
+                return null;
+            }
+            if (i > 0) sb.Append('\n').Append(markers[i]).Append('\n');
+            else sb.Append(markers[i]).Append('\n');
+            sb.Append(text.Trim());
+            Log.LogStep($"PodcastScript: act {act.Act} '{act.Title}' → {text.Length:N0} chars (target {act.TargetChars:N0})");
+        }
+
+        var body = FilterEmoji(sb.ToString()).Trim();
+        if (body.Length == 0) return null;
+
+        // Bounded enrichment: acts far below their target are expanded inline (narrative
+        // considerations woven in, same style), at most two rounds over the whole body.
+        for (int round = 0; round < 2; round++)
+        {
+            var expanded = false;
+            for (int i = 0; i < plan.Acts.Length; i++)
+            {
+                var act = plan.Acts[i];
+                if (act.TargetChars <= 0 || MeasureAct(body, i) >= act.TargetChars * 0.8) continue;
+                var (enriched, err) = llm.SendQuery(
+                    $"""
+                    {StyleSpec}
+
+                    The {Ordinal(act.Act)} act of the podcast episode about "{topic}" (in {langName}) is
+                    shorter than its target ({MeasureAct(body, i)} vs ~{act.TargetChars} characters).
+                    Expand it INLINE: add narrative considerations, anecdotes, context and reflection that
+                    deepen the existing story beats — keep the same style, do not repeat sentences, do not
+                    add act markers, do not write the intro or outro. Write the full expanded act.
+
+                    Current act text:
+                    {ExtractAct(body, i)}
+                    """,
+                    useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 9000, temperature: 0.8);
+                if (err == null && !string.IsNullOrWhiteSpace(enriched))
+                {
+                    body = ReplaceAct(body, i, enriched.Trim());
+                    expanded = true;
+                }
+            }
+            if (!expanded) break;
+        }
+
+        body = FilterEmoji(body).Trim();
+        Log.LogStep($"PodcastScript: body → {body.Length:N0} chars (target {targetChars:N0}); enrichment rounds logged per act");
+        return body.Length > 0 ? body : null;
+    }
+
+    /// <summary>Writes the short welcome intro announcing the themes the body actually covers
+    /// (given the body's opening) — generated AFTER the body, in the episode language.</summary>
+    internal static string GenerateIntro(string topic, string lang, string? podcastName, string body)
     {
         var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
         var welcome = string.IsNullOrWhiteSpace(podcastName)
-            ? "Start with a brief welcome to the listeners."
-            : $"The introduction must welcome the listeners of the podcast named \"{podcastName}\" by name.";
-
-        var preamble = $"""
-            {StyleSpec}
-
-            Episode topic: {topic}
-            {welcome}
-            Write the script in {LangName(lang)}.
-            Target length: about {targetChars} characters in total. Do not write it all at once if it is too long: the continuation will be requested separately.
-            Write only the first portion of the script now, ending mid-flow at a natural sentence boundary, so the next portion can continue seamlessly.
-
-            The news context below was gathered for this episode. Use it as factual material; never mention that it is a context or a list — weave it into the narrative.
-
-            {context}
-            """;
-
-        var sb = new StringBuilder();
-        var (first, firstError) = llm.SendQuery(preamble, useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 9000, temperature: 0.8);
-        if (firstError != null || string.IsNullOrWhiteSpace(first))
+            ? "Welcome the listeners briefly."
+            : $"Welcome the listeners of the podcast named \"{podcastName}\" by name.";
+        var opening = body.Length > 600 ? body[..600] : body;
+        var (text, error) = llm.SendQuery(
+            $"""
+            Write a SHORT welcome intro (3 to 5 sentences, at most 700 characters) for a podcast
+            episode in {LangName(lang)}. {welcome} Announce the themes that the episode covers.
+            The episode opens like this: "{opening}"
+            Plain flowing prose, no emoji, no markers, no bullets.
+            """,
+            useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 800, temperature: 0.7);
+        if (error == null && !string.IsNullOrWhiteSpace(text))
         {
-            Log.LogStep($"PodcastScript: first chunk failed — {(firstError is int h ? $"HTTP {h}" : "empty response")}");
-            return null;
+            var intro = FilterEmoji(text).Trim();
+            if (intro.Length > 0)
+            {
+                Log.LogStep($"PodcastScript: intro → {intro.Length:N0} chars");
+                return intro;
+            }
         }
-        sb.Append(first);
-
-        // Continuation chunks until the target length (3 chunks max keeps the story coherent).
-        for (int attempt = 0; attempt < 3 && sb.Length < targetChars; attempt++)
-        {
-            var tail = sb.ToString()[^Math.Min(400, sb.Length)..];
-            var (next, nextError) = llm.SendQuery(
-                $"""
-                Continue the podcast script exactly where it ended, seamlessly, in the same style and language.
-                Target total length: about {targetChars} characters.
-                The last portion ended with: "{tail}"
-                Write only the next portion, ending mid-flow at a natural sentence boundary.
-                """,
-                useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 9000, temperature: 0.8);
-            if (nextError != null || string.IsNullOrWhiteSpace(next)) break;
-            sb.Append('\n').Append(next);
-        }
-
-        var script = sb.ToString().Trim();
-        if (script.Length == 0) return null;
-
-        // The model occasionally wraps the script in markdown code fences — strip them.
-        Utility.RemoveFencesEncapsulationAndFixTrim(ref script);
-        return FilterEmoji(script);
+        return $"Benvenuti. Oggi parliamo di {topic}.";
     }
 
     /// <summary>Removes emoji and symbols deterministically (no LLM) while keeping the ASCII
@@ -127,7 +178,7 @@ internal static class PodcastScript
         return result.ToString();
     }
 
-    private static string LangName(string lang) => lang switch
+    internal static string LangName(string lang) => lang switch
     {
         "it" => "Italian",
         "en" => "English",
@@ -140,4 +191,45 @@ internal static class PodcastScript
         "ko" => "Korean",
         _ => "English",
     };
+
+    // ── act measurement / extraction (the act markers are the deterministic boundaries) ──
+
+    private static readonly string[] ActMarkers = { "[PRIMO ATTO]", "[SECONDO ATTO]", "[TERZO ATTO]" };
+
+    private static string ExtractAct(string body, int actIndex)
+    {
+        var start = body.IndexOf(ActMarkers[actIndex], StringComparison.Ordinal);
+        if (start < 0) return body;
+        start += ActMarkers[actIndex].Length;
+        var end = actIndex + 1 < ActMarkers.Length
+            ? body.IndexOf(ActMarkers[actIndex + 1], StringComparison.Ordinal)
+            : body.Length;
+        return end < 0 ? body[start..] : body[start..end];
+    }
+
+    private static int MeasureAct(string body, int actIndex)
+    {
+        var act = ExtractAct(body, actIndex);
+        // Exclude the markers themselves from the measurement.
+        foreach (var m in ActMarkers) act = act.Replace(m, "");
+        return act.Length;
+    }
+
+    private static string ReplaceAct(string body, int actIndex, string newAct)
+    {
+        var start = body.IndexOf(ActMarkers[actIndex], StringComparison.Ordinal);
+        if (start < 0) return body;
+        var end = actIndex + 1 < ActMarkers.Length
+            ? body.IndexOf(ActMarkers[actIndex + 1], StringComparison.Ordinal)
+            : body.Length;
+        if (end < 0) end = body.Length;
+        return body[..start] + ActMarkers[actIndex] + "\n" + newAct + body[end..];
+    }
+
+    private static string Ordinal(int n) => n switch { 1 => "first", 2 => "second", 3 => "third", _ => n + "th" };
+
+    private static string seamInstruction(string seam) =>
+        seam.Length == 0
+            ? "This is the opening act: start with the strong hook."
+            : $"Continue seamlessly from where the previous act ended (its last words: \"{seam}\") — the transition must feel like one continuous story.";
 }

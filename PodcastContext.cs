@@ -6,10 +6,13 @@ using ReverseMarkdown;
 
 namespace AIOrchestrator.API;
 
-/// <summary>Internal: gathers the news context for a podcast episode. Combines the shared
-/// web-search summaries (today + this week) with international RSS news feeds (aggregated and
-/// filtered by topic keywords) and the full text of the top articles. Every source fails
-/// independently — a broken feed never aborts the episode.</summary>
+/// <summary>Internal: researches the episode context. English queries from the plan (boolean
+/// combinations + variants) drive web searches whose time filter is ON only when the plan
+/// judged the episode news/event-sensitive; international RSS feeds and a Google News
+/// per-query feed add headlines (filtered by the topic keywords). The raw material is
+/// deduplicated, relevance-ranked, bounded by the 3X context budget and then compressed by a
+/// single LLM call into a research brief (≤ X) that the script writer consumes — the raw
+/// context never enters the writing prompt. Every source fails independently.</summary>
 internal static partial class PodcastContext
 {
     // Verified working international feeds (2026-08-28): broad + independent journalism mix.
@@ -52,113 +55,165 @@ internal static partial class PodcastContext
         "these", "those", "about", "after", "before", "between", "over", "under", "not", "but",
         "di", "del", "della", "dei", "delle", "il", "lo", "la", "gli", "le", "un", "una", "uno",
         "e", "ed", "o", "a", "in", "con", "per", "su", "tra", "fra", "da", "che", "come",
-        "what", "why", "how", "when", "who", "which",
+        "what", "why", "how", "when", "who", "which", "traveling", "travelling", "vacation",
     };
 
-    /// <summary>Gathers the episode context: today + this-week web summaries, the top topic
-    /// items of every international feed, and the full text of the best articles. Returns null
-    /// when NOTHING could be gathered (every source failed).</summary>
-    internal static string? Gather(string topic, string lang)
+    /// <summary>Researches the topic and returns the research brief (≤ <paramref name="targetChars"/>).
+    /// The raw material is bounded by the 3X budget (empirical: three times the target text).
+    /// Null when NOTHING could be gathered.</summary>
+    internal static string? Gather(string topic, PodcastPlan plan, int budgetChars, int targetChars)
     {
-        var sb = new StringBuilder();
-        sb.AppendLine($"# NEWS CONTEXT — topic: {topic} (gathered {DateTime.UtcNow:yyyy-MM-dd})");
-        sb.AppendLine();
+        var raw = new StringBuilder(Math.Min(budgetChars, 120_000));
+        var seen = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        var keywords = Keywords(plan.SearchQueries);
 
-        // 1) Shared web-search summaries: today's news, then this week's news.
-        var today = WebSearchHiLevel.SearchAndSummarize(topic, WebSearchEngine.SearchTimeRestriction.Today, 5);
-        if (!string.IsNullOrWhiteSpace(today))
+        // 1) Web searches: one per English query. For news/event episodes the FIRST query
+        //    targets today, the SECOND this week, and the rest are unrestricted — the episode
+        //    needs recent facts AND general background for its reflective sections. Evergreen
+        //    episodes never use a time filter.
+        for (int i = 0; i < plan.SearchQueries.Length; i++)
         {
-            sb.AppendLine("## NEWS FROM THE LAST 24 HOURS");
-            sb.AppendLine(today);
-            sb.AppendLine();
-        }
-        var week = WebSearchHiLevel.SearchAndSummarize(topic, WebSearchEngine.SearchTimeRestriction.Week, 5);
-        if (!string.IsNullOrWhiteSpace(week))
-        {
-            sb.AppendLine("## NEWS FROM THIS WEEK");
-            sb.AppendLine(week);
-            sb.AppendLine();
-        }
-
-        // 2) International feeds: every feed is fetched, scored against the topic keywords
-        //    (English keywords when the topic is not English), the best items collected.
-        var keywords = TopicKeywords(topic, lang);
-        var feedItems = FetchFeedItems(topic, keywords);
-
-        if (feedItems.Count > 0)
-        {
-            sb.AppendLine("## INTERNATIONAL SOURCES");
-            foreach (var item in feedItems.Take(40))
+            if (raw.Length >= budgetChars) break;
+            var restriction = plan.NeedsRecentFacts
+                ? (i switch
+                {
+                    0 => WebSearchEngine.SearchTimeRestriction.Today,
+                    1 => WebSearchEngine.SearchTimeRestriction.Week,
+                    _ => (WebSearchEngine.SearchTimeRestriction?)null,
+                })
+                : (WebSearchEngine.SearchTimeRestriction?)null;
+            var results = WebSearchEngine.Search(plan.SearchQueries[i], filetype: null,
+                provider: WebSearchEngine.SearchProvider.DuckDuckGo, timeRestriction: restriction);
+            Log.LogStep($"PodcastContext: query {i + 1} '{plan.SearchQueries[i]}' ({(restriction?.ToString() ?? "no filter")}) → {results.Length} results");
+            foreach (var r in results)
             {
-                var date = item.Published.HasValue ? item.Published.Value.ToString("yyyy-MM-dd") : "";
-                sb.AppendLine($"- [{item.Source}] {item.Title} ({date}) — {item.Url}");
+                if (raw.Length >= budgetChars) break;
+                if (string.IsNullOrWhiteSpace(r.Url) || !seen.Add(NormalizeUrl(r.Url))) continue;
+                var line = r.MdDescription;
+                if (line.Length == 0) continue;
+                raw.Append(line).Append('\n');
+                if (raw.Length >= budgetChars) break;
             }
-            sb.AppendLine();
         }
 
-        // 3) Full text of the best articles (the feed only carries the summary).
-        var toRead = feedItems.OrderByDescending(i => i.Score).Take(6).ToArray();
-        foreach (var item in toRead)
+        // 2) International feeds + Google News per-query (headlines only — cheap), scored by
+        //    the topic keywords; a news-less topic (e.g. recipes) simply scores nothing here.
+        foreach (var item in FetchFeedItems(plan.SearchQueries, keywords))
         {
-            var body = ReadArticle(item.Url);
-            if (string.IsNullOrWhiteSpace(body)) continue;
-            sb.AppendLine($"## ARTICLE: {item.Title} — {item.Source} ({item.Url})");
-            sb.AppendLine(body.Length > 12000 ? body[..12000] : body);
-            sb.AppendLine();
+            if (raw.Length >= budgetChars) break;
+            if (!seen.Add(NormalizeUrl(item.Url))) continue;
+            var date = item.Published.HasValue ? item.Published.Value.ToString("yyyy-MM-dd") : "";
+            raw.Append($"[{item.Source}] {item.Title} ({date}) — {item.Url}\n");
         }
 
-        var total = sb.ToString();
-        return total.Length > 500 ? total : null;
-    }
+        // 3) Full text of the top-ranked pages (search results first, then the best feed
+        //    items). When the accumulated material is still thin (below the episode target),
+        //    read more pages so the brief has enough facts to weave into 30 minutes.
+        var pagesToRead = raw.Length < targetChars ? 6 : 3;
+        foreach (var url in TopUrls(raw.ToString(), keywords, pagesToRead))
+        {
+            if (raw.Length >= budgetChars) break;
+            if (!seen.Add(NormalizeUrl(url))) continue;
+            var body = ReadArticle(url);
+            if (string.IsNullOrWhiteSpace(body)) continue;
+            raw.Append("\n### ").Append(url).Append('\n');
+            raw.Append(body.Length > 8000 ? body[..8000] : body).Append('\n');
+        }
 
-    /// <summary>Keyword set for feed scoring: the topic's own tokens plus (when the topic is
-    /// not English) an English translation of the topic via the LLM — feeds are English.</summary>
-    private static string[] TopicKeywords(string topic, string lang)
-    {
-        var tokens = Tokenize(topic);
-        if (lang == "en" || tokens.Length == 0) return tokens;
+        var material = raw.ToString();
+        if (material.Length < 500) return null;
+        Log.LogStep($"PodcastContext: {material.Length:N0} raw chars gathered (budget {budgetChars:N0})");
+
+        // 4) The research brief: one LLM call compresses the raw material (deduplicated,
+        //    facts preserved) into ≤ targetChars. The script writer sees ONLY the brief.
         try
         {
             var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
-            var (response, error) = llm.SendQuery(
-                $"Translate this news topic to English for searching English news: \"{topic}\". " +
-                "Reply with only the English translation, no quotes, no explanation.",
-                useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 200, temperature: 0);
-            if (error == null && !string.IsNullOrWhiteSpace(response))
+            var (brief, err) = llm.SendQuery(
+                $"""
+                Today's date is {DateTime.UtcNow:yyyy-MM-dd}.
+                A podcast episode about "{topic}" is being researched. Below is the raw material
+                gathered from web searches, international news feeds and articles.
+
+                Condense it into a research brief of at most {targetChars} characters that a script
+                writer will use to write a narrative podcast:
+                - Keep every concrete fact, date, number, name, quote and statistic relevant to the topic.
+                - Merge duplicate information across sources.
+                - Keep the distinction between very recent facts and general background.
+                - Plain flowing text, no preamble, no headings, no lists, no emoji.
+
+                Raw material:
+                {material}
+                """,
+                useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 9000, temperature: 0.3);
+            if (err == null && !string.IsNullOrWhiteSpace(brief))
             {
-                var translated = Tokenize(response);
-                if (translated.Length > 0) return translated;
+                var b = brief.Trim();
+                Log.LogStep($"PodcastContext: brief {b.Length:N0} chars");
+                return b.Length > 200 ? b : null;
             }
         }
         catch { }
-        return tokens;
+
+        // Fallback: the deduplicated raw material, capped.
+        return material.Length > targetChars ? material[..targetChars] : material;
     }
 
-    /// <summary>Tokenizes text into lowercase topic words (stop words and short words removed).</summary>
-    private static string[] Tokenize(string text)
+    /// <summary>Scoring tokens: the meaningful words of all English queries.</summary>
+    private static string[] Keywords(string[] queries)
     {
-        var words = Regex.Split(text.ToLowerInvariant(), @"[^a-z0-9]+");
-        var seen = new HashSet<string>(StringComparer.Ordinal);
         var result = new List<string>();
-        foreach (var w in words)
+        var seen = new HashSet<string>(StringComparer.Ordinal);
+        foreach (var q in queries)
         {
-            if (w.Length < 3 || StopWords.Contains(w) || !seen.Add(w)) continue;
-            result.Add(w);
+            foreach (var w in Regex.Split(q.ToLowerInvariant(), @"[^a-z0-9]+"))
+            {
+                if (w.Length < 3 || StopWords.Contains(w) || !seen.Add(w)) continue;
+                result.Add(w);
+            }
         }
         return result.ToArray();
     }
 
+    /// <summary>Returns the best <paramref name="count"/> URLs from the raw material, ranked by
+    /// keyword overlap with the topic (URLs already carrying their title line score higher).</summary>
+    private static IEnumerable<string> TopUrls(string material, string[] keywords, int count)
+    {
+        var entries = new List<(int Score, string Url)>();
+        foreach (var line in material.Split('\n'))
+        {
+            var m = Regex.Match(line, @"https?://\S+");
+            if (!m.Success) continue;
+            entries.Add((Score(line, keywords), m.Value));
+        }
+        return entries
+            .Where(e => !Regex.IsMatch(e.Url, @"duckduckgo\.com|google\.com|\.gov"))
+            .OrderByDescending(e => e.Score)
+            .ThenBy(e => e.Url)
+            .Select(e => e.Url)
+            .Distinct()
+            .Take(count);
+    }
+
+    private static string NormalizeUrl(string url)
+    {
+        var lower = url.ToLowerInvariant();
+        var q = lower.IndexOf('?');
+        if (q >= 0) lower = lower[..q];
+        return lower.TrimEnd('/');
+    }
+
     private sealed record FeedItem(string Source, string Title, string Url, DateTimeOffset? Published, int Score);
 
-    /// <summary>Fetches every international feed plus the Google News per-query feed, scores
+    /// <summary>Fetches the international feeds plus one Google News per-query feed, scores
     /// each item against the topic keywords and returns the best ones (capped).</summary>
-    private static List<FeedItem> FetchFeedItems(string topic, string[] keywords)
+    private static List<FeedItem> FetchFeedItems(string[] queries, string[] keywords)
     {
         var items = new List<FeedItem>();
-        var googleUrl = $"https://news.google.com/rss/search?q={Uri.EscapeDataString(topic)}&hl=en&gl=US&ceid=US:en";
-        var sources = Feeds.Append((Name: "Google News", Url: googleUrl)).ToArray();
+        var sources = Feeds.ToList();
+        foreach (var q in queries.Take(2))
+            sources.Add(("Google News: " + q, $"https://news.google.com/rss/search?q={Uri.EscapeDataString(q)}&hl=en&gl=US&ceid=US:en"));
 
-        // All feeds in parallel; each fails independently.
         var tasks = sources.Select(feed => Task.Run(() => FetchOne(feed.Name, feed.Url, keywords))).ToArray();
         try { Task.WaitAll(tasks, TimeSpan.FromSeconds(40)); }
         catch (AggregateException) { }
@@ -168,10 +223,9 @@ internal static partial class PodcastContext
             if (t.Status != TaskStatus.RanToCompletion || t.Result == null) continue;
             items.AddRange(t.Result);
         }
-        return items.OrderByDescending(i => i.Score).Take(80).ToList();
+        return items.OrderByDescending(i => i.Score).Take(40).ToList();
     }
 
-    /// <summary>Fetches one feed and returns its items scored by keyword overlap.</summary>
     private static List<FeedItem>? FetchOne(string source, string url, string[] keywords)
     {
         try
@@ -204,7 +258,7 @@ internal static partial class PodcastContext
         }
     }
 
-    /// <summary>Counts keyword hits in a title/summary (longer matches weigh more).</summary>
+    /// <summary>Counts keyword hits (longer matches weigh more).</summary>
     private static int Score(string text, string[] keywords)
     {
         var lower = text.ToLowerInvariant();

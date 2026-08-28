@@ -16,6 +16,7 @@ using System.Diagnostics;
 // ═══════════════════════════════════════════════════════════════════════
 
 var selftest = args.Contains("--selftest");
+var sampleOut = Arg(args, "--sample");
 var provider = Arg(args, "--provider") ?? "DeepSeekBridge";
 var podcastName = Arg(args, "--name");
 var topicArgs = new List<string>();
@@ -33,6 +34,10 @@ var topic = string.Join(" ", topicArgs);
 Setup.DocumentsPath = Path.Combine(Path.GetTempPath(), "podcasttool-workspace");
 Directory.CreateDirectory(Setup.DocumentsPath);
 InitGitWorkspace(Setup.DocumentsPath);
+
+// Diagnostics: the AIOrchestrator Log is off by default — enable it and write the tool's
+// step trace to logs/<pid>.txt next to the harness for the post-run analysis.
+Log.IsEnabled = true;
 
 var config = new ProviderConfig
 {
@@ -52,8 +57,32 @@ Setup.ProviderConfig = config;
 
 Console.WriteLine($"═══ PodcastTool.Harness (provider={provider}, workspace={Setup.DocumentsPath}) ═══");
 EnsureKokoroModel();
+Console.WriteLine($"Diagnostic log: {Log.CurrentLogFile}");
 
 var tool = new PodcastTool();
+
+if (sampleOut != null)
+{
+    // Generates a short English demo clip (intro → jingle → body on the ducked bed) — the
+    // sample used in the AgentBridge README media gallery.
+    Console.WriteLine($"── SAMPLE → {sampleOut} ──");
+    var intro = "Welcome to the AgentBridge podcast. Today we explore how artificial intelligence is reshaping the way we work.";
+    var body = """
+        [PRIMO ATTO]
+        Imagine walking into your office and finding a colleague who never sleeps, never forgets, and never complains. [pausa musicale]
+        That is the promise of autonomous agents. [breve silenzio]
+        [SECONDO ATTO]
+        They read your documents, answer your calls, and draft your reports. [pausa musicale]
+        All inside a sandbox that cannot be breached.
+        [TERZO ATTO]
+        Because the future is already here. [pausa musicale]
+        Running on your own hardware, under your own control.
+        """;
+    var wav = Path.ChangeExtension(sampleOut, ".wav");
+    var ok = PodcastMixer.Mix(intro, body, "en", wav, sampleOut);
+    Console.WriteLine(ok ? $"Sample OK: {sampleOut}" : $"Sample FAILED: {PodcastMixer.LastError}");
+    return;
+}
 
 if (selftest)
 {
@@ -99,30 +128,64 @@ static void RunSelftest(PodcastTool tool)
     Console.WriteLine($"  markers kept: {filtered.Contains("[SIGLA]")}");
     Console.WriteLine($"  quotes kept: {filtered.Contains('\"')}");
 
-    Console.WriteLine("── SELFTEST: audio pipeline (TTS + jingle + background + mix) ──");
-    var shortScript = """
-        Welcome to our test podcast. Today we talk about artificial intelligence.
-        [SIGLA]
+    Console.WriteLine("── SELFTEST: audio pipeline (intro→jingle→body + ducked bed + MP3) ──");
+    var shortIntro = "Benvenuti al Podcast Tool. Oggi parliamo di intelligenza artificiale.";
+    var shortBody = """
+        [PRIMO ATTO]
         It is everywhere, from your phone to your car. [pausa musicale]
         The story begins with a simple question. [breve silenzio]
-        [PRIMO ATTO]
+        [SECONDO ATTO]
         And that question changes everything we know.
+        [TERZO ATTO]
+        Because the future is already here.
         """;
     var wav = Path.Combine(Path.GetTempPath(), "podcasttool-selftest.wav");
-    var ok = PodcastMixer.Mix(shortScript, "en", wav);
-    if (ok && File.Exists(wav))
+    var mp3 = Path.Combine(Path.GetTempPath(), "podcasttool-selftest.mp3");
+    if (File.Exists(mp3)) File.Delete(mp3);
+    var ok = PodcastMixer.Mix(shortIntro, shortBody, "en", wav, mp3);
+    if (ok && File.Exists(mp3))
     {
-        var info = new FileInfo(wav);
-        // 48 kHz stereo int16 → seconds = bytes / (48000*2*2)
-        var seconds = info.Length / (48000L * 2 * 2);
-        Console.WriteLine($"Mix OK: {wav} — {info.Length:N0} bytes, ~{seconds}s");
-        Console.WriteLine($"  narration spoken: {seconds > 5}");
-        Console.WriteLine($"  jingle gap present: {seconds > 12}");   // jingle (~12s) + speech
+        var info = new FileInfo(mp3);
+        Console.WriteLine($"Mix OK: {mp3} — {info.Length:N0} bytes");
+        Console.WriteLine($"  mp3 produced: {info.Length > 5000}");
+        Console.WriteLine($"  wav intermediate removed: {!File.Exists(wav)}");
+        // MP3 bitrate sanity: bytes / duration ≈ bitrate/8. Duration unknown here, so just
+        // check the file is non-trivial and starts with the MP3 sync frame (0xFF 0xFB/E3).
+        var head = File.ReadAllBytes(mp3);
+        Console.WriteLine($"  mp3 sync frame: {head[0]:X2} {head[1]:X2} (expect FF E3/FB)");
     }
     else
     {
         Console.WriteLine($"Mix FAILED: {PodcastMixer.LastError}");
     }
+
+    Console.WriteLine("── SELFTEST: RSS feed builder ──");
+    var feedDir = Path.Combine(Path.GetTempPath(), "podcasttool-feedtest");
+    if (Directory.Exists(feedDir)) Directory.Delete(feedDir, true);   // clean between runs
+    Directory.CreateDirectory(feedDir);
+    var feedPath = PodcastFeed.Update(feedDir,
+        new PodcastFeedEntry("Episodio 1: Test", "Benvenuti a questo episodio di prova.",
+            "test-20260828.mp3", 123456, 1800),
+        "Il Podcast del Mattino", "it");
+    var feedXml = File.ReadAllText(feedPath);
+    Console.WriteLine($"feed created: {File.Exists(feedPath)}");
+    Console.WriteLine($"  channel title: {feedXml.Contains("<title>Il Podcast del Mattino</title>")}");
+    Console.WriteLine($"  item present: {feedXml.Contains("<item>") && feedXml.Contains("test-20260828.mp3")}");
+    Console.WriteLine($"  enclosure: {feedXml.Contains("length=\"123456\"") && feedXml.Contains("type=\"audio/mpeg\"")}");
+    Console.WriteLine($"  itunes:duration: {feedXml.Contains("<itunes:duration>1800</itunes:duration>")}");
+    // Second episode appends; same guid replaces (no duplicates).
+    var feedPath2 = PodcastFeed.Update(feedDir,
+        new PodcastFeedEntry("Episodio 1: Test", "Stesso episodio.",
+            "test-20260828.mp3", 999, 1900),
+        "Il Podcast del Mattino", "it");
+    var feedXml2 = File.ReadAllText(feedPath2);
+    Console.WriteLine($"  replace same guid: {feedXml2.Contains("length=\"999\"") && !feedXml2.Contains("length=\"123456\"")}");
+    var feedPath3 = PodcastFeed.Update(feedDir,
+        new PodcastFeedEntry("Episodio 2: Test", "Secondo episodio.",
+            "test2-20260828.mp3", 222, 2000),
+        "Il Podcast del Mattino", "it");
+    var feedXml3 = File.ReadAllText(feedPath3);
+    Console.WriteLine($"  append episode 2: {(feedXml3.Split("<item>").Length - 1) == 2}");
     Console.WriteLine("SELFTEST DONE");
 }
 
