@@ -120,16 +120,20 @@ internal static class PodcastScript
         }
 
         // Deterministic length control LAST (AFTER the enrichment — a trim before it would be
-        // undone, wasting two LLM passes): when the body still overshoots the episode target,
-        // shorten the LAST act at a sentence boundary — the least destructive cut (the
-        // three-act arc stays intact; only the outro tail shortens). This is the actual
-        // guarantee of the "about X characters" spec.
+        // undone, wasting two LLM passes). The trim is deliberately TOLERANT: it fires only
+        // when the episode is clearly over-long (> 1.25x the target) and lands at 1.15x, NOT
+        // at the exact target — cutting ~4k characters can remove important reasoning from
+        // the third act (climax/resolution), so a slightly longer but complete episode is
+        // preferred over an exact-length but truncated one. The cut itself shortens the LAST
+        // act at a sentence boundary (the least destructive point).
         var wasTrimmed = false;
-        if (body.Length > (int)(targetChars * 1.1))
+        const double fireRatio = 1.25;   // trim only genuinely over-long episodes
+        const double landRatio = 1.15;   // land at ~115% of the target, not the exact target
+        if (body.Length > (int)(targetChars * fireRatio))
         {
             var last = plan.Acts.Length - 1;
             var lastLen = ExtractAct(body, last).Length;
-            var room = Math.Max(800, targetChars - (body.Length - lastLen));
+            var room = Math.Max(800, (int)(targetChars * landRatio) - (body.Length - lastLen));
             body = ReplaceAct(body, last, TrimToLength(ExtractAct(body, last), room));
             wasTrimmed = true;
             Log.LogStep($"PodcastScript: body trimmed to {body.Length:N0} chars (last act shortened)");

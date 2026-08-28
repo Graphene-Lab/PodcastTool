@@ -17,7 +17,8 @@ public class PodcastTool : BaseAgentTool, IFileTool
     /// of about 25,000 characters (three acts, continuous storytelling — no bullet lists, no
     /// emoji) and the mixed audio (voice, jingle, soft background music) as an MP3 file. The
     /// episode starts with a short welcome introduction announcing the covered themes, then
-    /// the jingle, then the episode proper.
+    /// the jingle, then the episode proper. Verbose writers are tolerated (up to ~29,000
+    /// characters) so the third act is never truncated mid-narrative.
     /// </summary>
     /// <param name="topic">The episode subject. When the subject depends on recent facts or
     /// events, recent news about it is gathered; otherwise general background material is used.</param>
