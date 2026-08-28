@@ -1,3 +1,4 @@
+using System.Text.RegularExpressions;
 using KokoroSharp;
 using KokoroSharp.Core;
 using KokoroSharp.Processing;
@@ -42,7 +43,7 @@ internal static class PodcastTts
     {
         EnsureInitialized();
         if (_synth == null) return null;
-        text = NormalizeApostrophes(text);
+        text = NormalizeForTts(text, lang);
         if (string.IsNullOrEmpty(text)) return Array.Empty<byte>();
 
         var voice = ResolveVoice(lang);
@@ -54,18 +55,27 @@ internal static class PodcastTts
         }
     }
 
-    /// <summary>Canonical apostrophes → U+0027. Verified empirically on Kokoro: the phonemizer
-    /// elides "l'amico" only with the ASCII apostrophe; the typographic ’/‘ are pronounced as
-    /// a separate letter (the reported bug). Local copy of Utility.NormalizeForTts — migrate
-    /// when Graphene.AIOrchestrator ≥ 1.26.08.29 ships it.</summary>
-    private static string NormalizeApostrophes(string text)
+    /// <summary>Plugin-local TTS normalization (the shared VoiceConversation.NormalizeForTts
+    /// replaces it once Graphene.AIOrchestrator ≥ 1.26.08.29 ships — the packed plugin must
+    /// compile against the current package): canonical apostrophes → U+0027 (verified: the
+    /// typographic ’ breaks the Italian elision), space after sentence punctuation, and the
+    /// English acronym "AI" → "[AI](/eɪ aɪ/)" for Italian (the Italian voice reads "AI" as the
+    /// letter names; the hint is KokoroSharp's literal-pronunciation syntax). The language is
+    /// a parameter here, so no detection is ever needed in the podcast path.</summary>
+    private static string NormalizeForTts(string text, string? lang)
     {
-        if (text.IndexOfAny(['\u2019', '\u2018', '\u02BC', '\u2032', '\u2033', '\uFF07']) < 0) return text;
-        return string.Create(text.Length, text, static (span, src) =>
+        if (text.IndexOfAny(['\u2019', '\u2018', '\u02BC', '\u2032', '\u2033', '\uFF07']) >= 0)
         {
-            for (int i = 0; i < src.Length; i++)
-                span[i] = src[i] is '\u2019' or '\u2018' or '\u02BC' or '\u2032' or '\u2033' or '\uFF07' ? '\'' : src[i];
-        });
+            text = string.Create(text.Length, text, static (span, src) =>
+            {
+                for (int i = 0; i < src.Length; i++)
+                    span[i] = src[i] is '\u2019' or '\u2018' or '\u02BC' or '\u2032' or '\u2033' or '\uFF07' ? '\'' : src[i];
+            });
+        }
+        text = Regex.Replace(text, @"([.!?;])(?=[^\d\s])", "$1 ");
+        if (string.Equals(lang, "it", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(text, @"\bAI\b"))
+            text = Regex.Replace(text, @"\bAI\b", "[AI](/eɪ aɪ/)");
+        return text;
     }
 
     private static void EnsureInitialized()

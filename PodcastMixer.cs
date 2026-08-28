@@ -42,7 +42,9 @@ internal static partial class PodcastMixer
 
         var sampleRate = PodcastTts.SampleRate;              // 24 kHz mono narration
         const int outRate = 48000;                           // output: 48 kHz stereo
-        var jingleDuration = (double)jingle.Length / (2 * 2) / outRate;   // stereo int16 frames → seconds
+        // jingle is short[] stereo: frames = Length/2, seconds = frames/outRate. (A spurious
+        // extra /2 here halved the slot and let the first act overlap the jingle — fixed.)
+        var jingleDuration = (double)jingle.Length / 2 / outRate;   // stereo int16 frames → seconds
 
         // 1) Narration = welcome intro + 0.6 s breath + the body (markers become silences).
         //    The jingle slot is the gap right after the intro.
