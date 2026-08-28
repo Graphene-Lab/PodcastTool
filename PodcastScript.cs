@@ -119,16 +119,14 @@ internal static class PodcastScript
             if (!expanded) break;
         }
 
-        // Deterministic length control LAST (AFTER the enrichment — a trim before it would be
-        // undone, wasting two LLM passes). The trim is deliberately TOLERANT: it fires only
-        // when the episode is clearly over-long (> 1.25x the target) and lands at 1.15x, NOT
-        // at the exact target — cutting ~4k characters can remove important reasoning from
-        // the third act (climax/resolution), so a slightly longer but complete episode is
-        // preferred over an exact-length but truncated one. The cut itself shortens the LAST
-        // act at a sentence boundary (the least destructive point).
+        // Episodes are kept WHOLE (the user's rule: never cut the narrative for the minute).
+        // The only guard is a safety ceiling for pathological over-length: above 1.5x the
+        // target the last act is shortened at a sentence boundary (least destructive point)
+        // landing at 1.3x, then a generated outro closes the episode. Normal episodes
+        // (typically 25-37k characters, 30-45 minutes) are never touched.
         var wasTrimmed = false;
-        const double fireRatio = 1.25;   // trim only genuinely over-long episodes
-        const double landRatio = 1.15;   // land at ~115% of the target, not the exact target
+        const double fireRatio = 1.5;    // safety ceiling only — pathological over-length
+        const double landRatio = 1.3;    // still leaves a generous length after a cut
         if (body.Length > (int)(targetChars * fireRatio))
         {
             var last = plan.Acts.Length - 1;

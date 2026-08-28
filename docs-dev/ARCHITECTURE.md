@@ -139,15 +139,13 @@ If the brief call fails, the fallback is the deduplicated raw material capped at
   bullets/emoji), the act title + beats + target length, and — except for act 1 — the last
   300 characters of the previous act as a **seam** so the transition reads as one story.
 - The output length is NOT capped with maxToken: truncating mid-act could sever the narrative
-  and the provider's cap enforcement proved unreliable. The model writes each act fully. The
-  length control is deliberately TOLERANT (verified with real episodes: a brutal cut of ~4k
-  characters can remove important reasoning from the third act's climax/resolution): the
-  deterministic trim fires only when the body exceeds **1.25x** the target and lands at
-  **1.15x**, never at the exact target — a slightly longer but complete episode is preferred
-  over an exact-length but truncated one. The trim shortens the LAST act at a sentence
-  boundary (the least destructive point) and runs AFTER the enrichment (a trim before it
-  would be undone and waste two LLM passes). When a trim fires, a short **outro** is generated
-  so the episode never ends mid-flow.
+  and the provider's cap enforcement proved unreliable. The model writes each act fully.
+  **Episodes are kept whole** (the operating rule: never cut the narrative for the minute) —
+  the length follows the writer, typically 25,000-37,000 characters (30-45 minutes). The only
+  guard is a safety ceiling for pathological over-length: above **1.5x** the target the last
+  act is shortened at a sentence boundary (the least destructive point) landing at **1.3x**,
+  and a generated **outro** closes the episode so it never ends mid-flow. The trim runs AFTER
+  the enrichment (a trim before it would be undone and waste two LLM passes).
 - Every act prompt and the intro state **today's date** (UTC) as the temporal reference — the
   writer must know whether an event "on 28 August" is today, past or upcoming; the planner and
   the brief already carry it.
