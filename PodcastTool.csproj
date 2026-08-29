@@ -75,6 +75,9 @@
     </None>
     <EmbeddedResource Include="Assets\audio\jingle.mp3" LogicalName="PodcastTool.assets.audio.jingle.mp3" />
     <EmbeddedResource Include="Assets\audio\background.mp3" LogicalName="PodcastTool.assets.audio.background.mp3" />
+    <!-- Phoneme Literals dictionary (same file as AIOrchestrator's — the packed plugin cannot
+         read the host's embedded copy until Graphene.AIOrchestrator >= the version that ships it). -->
+    <EmbeddedResource Include="phonemes.txt" LogicalName="PodcastTool.phonemes.txt" />
   </ItemGroup>
   <ItemGroup>
     <None Update="LICENSE.md">

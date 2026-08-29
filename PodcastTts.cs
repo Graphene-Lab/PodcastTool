@@ -67,10 +67,12 @@ internal static class PodcastTts
     /// <summary>Plugin-local TTS normalization (the shared VoiceConversation.NormalizeForTts
     /// replaces it once Graphene.AIOrchestrator ≥ 1.26.08.29 ships — the packed plugin must
     /// compile against the current package): canonical apostrophes → U+0027 (verified: the
-    /// typographic ’ breaks the Italian elision), space after sentence punctuation, and the
-    /// English acronym "AI" → "[AI](/eɪ aɪ/)" for Italian (the Italian voice reads "AI" as the
-    /// letter names; the hint is KokoroSharp's literal-pronunciation syntax). The language is
-    /// a parameter here, so no detection is ever needed in the podcast path.</summary>
+    /// typographic ’ breaks the Italian elision), double quote dropped, space after sentence
+    /// punctuation, the Italian elided article "l'" merged with the following word (the Kokoro
+    /// espeak-replay reads it as the letter name "elle" before guessed words), and the shared
+    /// Phoneme Literals dictionary ("[word](/ipa/)" — KokoroSharp supports it) for English
+    /// loanwords ("AI" → /eɪ aɪ/, "source" → /sɔːs/, ...). The language is a parameter here, so
+    /// no detection is ever needed in the podcast path.</summary>
     private static string NormalizeForTts(string text, string? lang)
     {
         if (text.IndexOfAny(['\u2019', '\u2018', '\u02BC', '\u2032', '\u2033', '\uFF07']) >= 0)
@@ -85,9 +87,62 @@ internal static class PodcastTts
         // stays (Italian elisions depend on it).
         text = text.Replace("\"", "");
         text = Regex.Replace(text, @"([.!?;])(?=[^\d\s])", "$1 ");
-        if (string.Equals(lang, "it", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(text, @"\bAI\b"))
-            text = Regex.Replace(text, @"\bAI\b", "[AI](/eɪ aɪ/)");
+        // Italian elided article "l'" + vowel: merge reproduces the elision ("l'allarme" →
+        // "lallarme"); the replay reads the standalone article as the letter name "elle".
+        if (string.Equals(lang, "it", StringComparison.OrdinalIgnoreCase))
+            text = Regex.Replace(text, @"(?i:\bl')(?=[a-zàèéìòóù])", "l");
+        // Phoneme Literals dictionary (KokoroSharp supports the [word](/ipa/) syntax).
+        text = ApplyPhonemeHints(text);
         return text;
+    }
+
+    /// <summary>Applies the plugin's embedded Phoneme Literals dictionary (same content as
+    /// AIOrchestrator's — the packed plugin cannot read the host's embedded copy). Matching is
+    /// case-insensitive ("Source" matches "source") except for all-caps entries ("AI" only).</summary>
+    private static string ApplyPhonemeHints(string text)
+    {
+        var entries = PhonemeEntries.Value;
+        if (entries.Count == 0) return text;
+        foreach (var (word, phonemes, regex, caseSensitive) in entries)
+        {
+            if (text.IndexOf(word, caseSensitive ? StringComparison.Ordinal : StringComparison.OrdinalIgnoreCase) < 0)
+                continue;
+            text = regex.Replace(text, $"[{word}](/{phonemes}/)");
+        }
+        return text;
+    }
+
+    private static readonly Lazy<List<(string Word, string Phonemes, Regex Regex, bool CaseSensitive)>> PhonemeEntries = new(LoadPhonemeEntries);
+
+    private static List<(string Word, string Phonemes, Regex Regex, bool CaseSensitive)> LoadPhonemeEntries()
+    {
+        var result = new List<(string, string, Regex, bool)>();
+        try
+        {
+            using var stream = typeof(PodcastTts).Assembly.GetManifestResourceStream("PodcastTool.phonemes.txt");
+            if (stream == null) return result;
+            using var reader = new StreamReader(stream);
+            string? line;
+            while ((line = reader.ReadLine()) != null)
+            {
+                line = line.Trim();
+                if (line.Length == 0 || line[0] == '#') continue;
+                var tab = line.IndexOf('\t');
+                if (tab <= 0) continue;
+                var word = line[..tab].Trim();
+                var phonemes = line[(tab + 1)..].Trim();
+                if (word.Length == 0 || phonemes.Length == 0) continue;
+                var caseSensitive = word == word.ToUpperInvariant() && word != word.ToLowerInvariant();
+                result.Add((word, phonemes,
+                    new Regex($@"\b{Regex.Escape(word)}\b",
+                        caseSensitive ? RegexOptions.CultureInvariant
+                                      : RegexOptions.IgnoreCase | RegexOptions.CultureInvariant,
+                        TimeSpan.FromMilliseconds(100)),
+                    caseSensitive));
+            }
+        }
+        catch { /* no dictionary — the TTS falls back to the engine's own pronunciation */ }
+        return result;
     }
 
     private static void EnsureInitialized()
