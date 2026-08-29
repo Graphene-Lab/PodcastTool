@@ -108,9 +108,9 @@ internal static partial class PodcastMixer
             AppendPcm(Speak(token, lang));
         }
 
-        // 1b) The closing stinger: a very short final musical hit right after the outro speech
-        //    (0.6 s breath, then the last ~3 s of the sigla with a fade-out).
-        var stingerDuration = Math.Min(3.0, jingleDuration);
+        // 1b) The closing stinger: a short final musical hit right after the outro speech
+        //    (0.6 s breath, then the last ~7 s of the sigla with a fade-out).
+        var stingerDuration = Math.Min(7.0, jingleDuration);
         AppendSilence(0.6);
         stingerStartSec = currentSec;
         AppendSilence(stingerDuration);
