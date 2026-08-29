@@ -81,6 +81,9 @@ internal static class PodcastTts
                     span[i] = src[i] is '\u2019' or '\u2018' or '\u02BC' or '\u2032' or '\u2033' or '\uFF07' ? '\'' : src[i];
             });
         }
+        // The double quote (the LLM's only quoting mark in practice) dropped; the apostrophe
+        // stays (Italian elisions depend on it).
+        text = text.Replace("\"", "");
         text = Regex.Replace(text, @"([.!?;])(?=[^\d\s])", "$1 ");
         if (string.Equals(lang, "it", StringComparison.OrdinalIgnoreCase) && Regex.IsMatch(text, @"\bAI\b"))
             text = Regex.Replace(text, @"\bAI\b", "[AI](/eɪ aɪ/)");
