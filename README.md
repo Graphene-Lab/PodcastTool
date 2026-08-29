@@ -1,8 +1,9 @@
 # PodcastTool
 
 Podcast generation agent tool for AIOrchestrator: creates a complete narrated podcast
-episode about a topic — a continuous narrative script (~25,000 characters, ~30 minutes of
-speech) and the mixed audio (voice + jingle + quiet background loop) as a WAV file.
+episode about a topic — a continuous narrative script of the configured duration (default
+~30 minutes of speech) and the mixed audio (voice + jingle + quiet background loop) as an
+MP3 file.
 
 ## Pipeline
 
@@ -13,36 +14,85 @@ speech) and the mixed audio (voice + jingle + quiet background loop) as a WAV fi
    the topic keywords (auto-translated to English when the topic is not English), the best
    articles are read in full.
 2. **Script**: the LLM writes the episode following the narrative style spec (dramatic arc,
-   three acts, hooks, `[pausa musicale]`/`[breve silenzio]` cues every 10–12 seconds, short
-   sentences for the TTS), in chunks until the target length; emoji are removed
-   deterministically.
+   acts, hooks, `[pausa musicale]`/`[breve silenzio]` cues every 10–12 seconds, short
+   sentences for the TTS); the per-act lengths are **deterministic** (see below); emoji are
+   removed deterministically.
 3. **Audio**: the narration is synthesized sentence by sentence with the shared Kokoro TTS
    engine (AIOrchestrator `KokoroTts`), the CC0 jingle and background loop are decoded and
    resampled with [OwnAudioSharp.Basic](https://github.com/ModernMube/OwnAudioSharp), and the
    three streams are mixed into a 48 kHz stereo 16-bit WAV.
 
+## Episode duration & the deterministic length mechanism
+
+The episode duration is the ONLY user knob. It lives in the tool config **`podcast.json`**
+(next to the executable, under `assets/` — the same host-level assets convention as the
+other tools):
+
+```json
+{
+  "durationMinutes": 30,
+  "_comment": "Episode duration in minutes (default 30 = 2 min intro+closing stinger + 28 min of acts). The per-act lengths and the research budget are derived deterministically from this value — changing it needs no code changes."
+}
+```
+
+The file is created automatically with the default on first use and is **never overwritten**,
+neither by the plugin updates (the updater skips `.json` files) nor by the tool itself, so
+the user's setting always survives. Editing it is enough to change the episode length.
+
+Everything else is **derived, never left to the LLM**:
+
+- `actsMinutes = durationMinutes − 2` (2 minutes = welcome intro + closing musical stinger).
+- `actCount = round(actsMinutes / 9.333)` — the standard act length for the default episode
+  is 9.333 minutes (28/3), so the default yields **3 acts**; the count is clamped to [3, 6]
+  (the writer and the mixer support any count).
+- `actChars = actsMinutes × 833 / actCount` (833 ≈ characters per minute of speech): all acts
+  get **equal** size — when the division would not be an integer the per-act length is
+  adjusted so the acts stay equal and no act is left over as a shorter/longer tail.
+- `budgetChars = totalChars × 3`: the research budget scales with the configured duration.
+
+**Per-act targets at write time (cumulative correction):** the writer tells the LLM the act's
+target length, but the LLM only approximates it (a loose model ± a few thousand characters).
+After each act the cumulative difference vs the cumulative prediction is applied to the NEXT
+act's target:
+
+```
+act 1 target = actChars                     (e.g. 7,777)
+act 1 writes 8,777  →  difference = +1,000
+act 2 target = 7,777 − 1,000 = 6,777
+act 2 writes 6,777  →  difference = 0
+act 3 target = 7,777
+```
+
+The total converges to `actChars × actCount` regardless of the model's tolerance (the
+correction is bounded to 50–150% of the base so a single large overrun cannot force an
+unusable act). Episodes are never cut: the correction happens at write time, the narrative
+stays whole, and the final duration lands within a few minutes of the configured value.
+
 ## Methods
 
 | Method | Purpose |
 |---|---|
-| `generate_podcast` | Generates the episode: script (`.md`) + audio (`.wav`) under `/podcasts/<topic>/`. |
+| `generate_podcast` | Generates the episode: script (`.md`) + audio (`.mp3`) under `/podcast/<topic>/`. |
 
 ### generate_podcast
 
 ```
-generate_podcast(topic, language?, podcastName?)
+generate_podcast(topic, language?, podcastName?, minimizeAcronyms?)
 ```
 
 - `topic` (required): the episode subject. Recent news about it is gathered automatically.
 - `language` (optional): two-letter ISO code for the script and voice; detected from the
   topic when omitted.
 - `podcastName` (optional): the introduction welcomes the listeners of that podcast by name.
+- `minimizeAcronyms` (optional, default true): the writer expands every acronym/abbreviation
+  ("Bitcoin" not "BTC") — TTS engines often mispronounce them.
 
 The script starts with a short introduction announcing the covered themes, then the `[SIGLA]`
-marker plays the jingle, then the episode proper. The audio is saved as an **MP3** together
-with an **RSS 2.0 feed** (iTunes-compatible, one `<item>` per episode) under
-`/podcast/<podcast-or-topic>/`. Failures return `Error: ...` with the cause; the audio part is
-skipped (with a note) when the host lacks the TTS assets.
+marker plays the jingle, then the episode proper, then the host farewell and the closing
+stinger. The audio is saved as an **MP3** together with an **RSS 2.0 feed**
+(iTunes-compatible, one `<item>` per episode) under `/podcast/<podcast-or-topic>/`. Failures
+return `Error: ...` with the cause; the audio part is skipped (with a note) when the host
+lacks the TTS assets.
 
 ## Architecture
 

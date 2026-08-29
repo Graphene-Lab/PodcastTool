@@ -14,12 +14,13 @@ public class PodcastTool : BaseAgentTool, IFileTool
 {
     /// <summary>
     /// Generates a complete podcast episode about <paramref name="topic"/>: a narrative script
-    /// of about 25,000 characters (three acts, continuous storytelling — no bullet lists, no
-    /// emoji) and the mixed audio (voice, jingle, soft background music) as an MP3 file. The
-    /// episode starts with a short welcome introduction announcing the covered themes, then
-    /// the jingle, then the episode proper. Episodes are kept WHOLE: the length follows the
-    /// writer (typically 25,000-37,000 characters, 30-45 minutes) — the narrative is never
-    /// cut to hit an exact duration.
+    /// of a duration set in the tool config (podcast.json, "durationMinutes", default 30 —
+    /// the per-act lengths are derived deterministically from it) and the mixed audio (voice,
+    /// jingle, soft background music) as an MP3 file. The episode starts with a short welcome
+    /// introduction announcing the covered themes, then the jingle, then the episode proper.
+    /// Episodes are kept WHOLE: the per-act targets are corrected deterministically after each
+    /// act so the total converges to the configured duration, and the narrative is never cut
+    /// to hit an exact duration.
     /// </summary>
     /// <param name="topic">The episode subject. When the subject depends on recent facts or
     /// events, recent news about it is gathered; otherwise general background material is used.</param>
@@ -58,10 +59,13 @@ public class PodcastTool : BaseAgentTool, IFileTool
                 lang = normalized;
             }
 
-            // 1) Plan: recent-facts judgment + English queries + three-act outline.
-            const int targetChars = 25000;               // X: ~30 minutes of speech
+            // 1) Deterministic length model: the duration comes from the tool config
+            //    (podcast.json, "durationMinutes", default 30 = 2 min intro+closing + 28 min
+            //    of acts). The per-act lengths and the research budget are DERIVED — the LLM
+            //    never decides them. Changing the duration needs no code changes.
+            var (actCount, actChars, targetChars) = PodcastLengths.Compute(PodcastConfig.DurationMinutes);
             var budgetChars = targetChars * 3;           // empirical context budget: 3X
-            var plan = PodcastPlanner.Plan(topic, lang, targetChars);
+            var plan = PodcastPlanner.Plan(topic, lang, actCount, actChars);
             if (plan == null)
                 return "Error: the language model did not produce an episode plan. Retry later.";
 
@@ -71,9 +75,10 @@ public class PodcastTool : BaseAgentTool, IFileTool
             if (string.IsNullOrWhiteSpace(brief))
                 return "Error: no information about this topic could be gathered. Retry later or choose a broader topic.";
 
-            // 4) Body: act by act (enrichment fallback is internal). minimizeAcronyms defaults
-            //    true: the writer expands acronyms/abbreviations (TTS pronounces them wrongly).
-            var body = PodcastScript.Generate(topic, lang, brief, plan, targetChars, minimizeAcronyms);
+            // 4) Body: act by act (deterministic per-act targets + cumulative correction;
+            //    enrichment fallback is internal). minimizeAcronyms defaults true: the writer
+            //    expands acronyms/abbreviations (TTS pronounces them wrongly).
+            var body = PodcastScript.Generate(topic, lang, brief, plan, actChars, minimizeAcronyms);
             if (string.IsNullOrWhiteSpace(body))
                 return "Error: the language model did not produce the episode script. Retry later.";
 

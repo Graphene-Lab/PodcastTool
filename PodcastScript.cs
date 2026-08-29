@@ -1,4 +1,5 @@
 using System.Text;
+using System.Text.RegularExpressions;
 
 namespace AIOrchestrator.API;
 
@@ -29,11 +30,11 @@ internal static class PodcastScript
         - NO bullet lists, NO numbered lists, NO markdown headings, NO bold, NO emoji, NO links: pure continuous prose with the [markers] only.
         """;
 
-    /// <summary>Writes the body act by act (the act markers are added deterministically by the
-    /// caller). Returns null when the first act fails. When <paramref name="minimizeAcronyms"/>
-    /// is true (default) the style instructs the writer to expand every acronym and abbreviation
-    /// — TTS engines often mispronounce them ("Bitcoin" not "BTC").</summary>
-    internal static string? Generate(string topic, string lang, string brief, PodcastPlan plan, int targetChars, bool minimizeAcronyms = true)
+    /// <summary>Writes the episode body act by act. The per-act lengths are DETERMINISTIC
+    /// (base <paramref name="actChars"/> from PodcastLengths): after each act the cumulative
+    /// difference vs the cumulative prediction is applied to the NEXT act's target, so the
+    /// total converges to actChars × act count. The LLM never decides the lengths.</summary>
+    internal static string? Generate(string topic, string lang, string brief, PodcastPlan plan, int actChars, bool minimizeAcronyms = true)
     {
         var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
         var langName = LangName(lang);
@@ -41,11 +42,18 @@ internal static class PodcastScript
         if (minimizeAcronyms)
             style += "\n- NO acronyms or initialisms: expand every abbreviation and acronym to its full form (write \"Bitcoin\", not \"BTC\").";
         var sb = new StringBuilder();
-        string[] markers = { "[PRIMO ATTO]", "[SECONDO ATTO]", "[TERZO ATTO]" };
+        var markers = ActMarkers(plan.Acts.Length);
+        var cumulativeActual = 0;
 
         for (int i = 0; i < plan.Acts.Length; i++)
         {
             var act = plan.Acts[i];
+            // Deterministic correction: expected cumulative at this point = base × i; the
+            // difference (real − expected) is applied to the next act's target (bounded, so a
+            // single big overrun cannot force an unusable act). A model with a small tolerance
+            // gets small corrections; a loose model gets bigger ones — self-adjusting.
+            var diff = cumulativeActual - actChars * i;
+            var target = Math.Clamp(actChars - diff, actChars / 2, actChars * 3 / 2);
             var seam = sb.Length > 0 ? sb.ToString()[^Math.Min(300, sb.Length)..] : "";
             var beats = act.Beats.Length > 0 ? string.Join("; ", act.Beats) : "(follow the act's narrative arc)";
             var (text, error) = llm.SendQuery(
@@ -60,9 +68,8 @@ internal static class PodcastScript
                 You are writing ACT {act.Act} of the episode, in {langName}.
                 Act title: {act.Title}.
                 Story beats for this act: {beats}.
-                Target length for this act: at most {act.TargetChars} characters — aim slightly
-                below the target.
-                {(i == plan.Acts.Length - 1 ? "This is the final act: write concisely — DON'T BE VERBOSE." : "")}
+                Target length for this act: about {target} characters — aim for exactly that
+                number. The next act compensates for any over- or underrun, so keep it close.
                 {seamInstruction(seam)}
                 Write only this act. Do not add act markers, do not write the intro or the outro.
 
@@ -85,12 +92,13 @@ internal static class PodcastScript
             if (i > 0) sb.Append('\n').Append(markers[i]).Append('\n');
             else sb.Append(markers[i]).Append('\n');
             sb.Append(text);
-            Log.LogStep($"PodcastScript: act {act.Act} '{act.Title}' → {text.Length:N0} chars (target {act.TargetChars:N0})");
+            cumulativeActual += text.Length;
+            Log.LogStep($"PodcastScript: act {act.Act} '{act.Title}' → {text.Length:N0} chars (deterministic target {target:N0}, base {actChars:N0})");
         }
 
         // Episodes are NEVER cut (the operating rule): the length follows the writer — the
-        // "at most N characters" + "don't be verbose" instructions prevent verbosity at the
-        // source. No deterministic trim, no outro repair: the narrative always stays whole.
+        // explicit per-act targets + the cumulative correction keep the total on schedule
+        // WITHOUT trimming. No deterministic trim, no outro repair: the narrative stays whole.
         var body = FilterEmoji(sb.ToString()).Trim();
         if (body.Length == 0) return null;
 
@@ -131,8 +139,19 @@ internal static class PodcastScript
         }
 
         body = FilterEmoji(body).Trim();
-        Log.LogStep($"PodcastScript: body → {body.Length:N0} chars (target {targetChars:N0}); enrichment rounds logged per act");
+        Log.LogStep($"PodcastScript: body → {body.Length:N0} chars (deterministic total {actChars * plan.Acts.Length:N0}, base {actChars:N0}/act); enrichment rounds logged per act");
         return body.Length > 0 ? body : null;
+    }
+
+    /// <summary>Act markers in Italian ordinal order, up to the plan's act count ("[PRIMO
+    /// ATTO]" ... "[SESTO ATTO]"). The mixer treats any "[...]" marker as a short pause
+    /// (unrecognized names fall back to a small silence), so extra acts need no mixer change.</summary>
+    private static string[] ActMarkers(int count)
+    {
+        var names = new[] { "primo", "secondo", "terzo", "quarto", "quinto", "sesto" };
+        return names.Take(Math.Clamp(count, 1, names.Length))
+            .Select(n => $"[{n.ToUpperInvariant()} ATTO]")
+            .ToArray();
     }
 
     /// <summary>Writes the short welcome intro announcing the themes the body actually covers
@@ -292,16 +311,23 @@ internal static class PodcastScript
     };
 
     // ── act measurement / extraction (the act markers are the deterministic boundaries) ──
+    // The markers are discovered from the body itself, so any number of acts works (the
+    // writer emits "[PRIMO ATTO]" ... "[SESTO ATTO]" deterministically from the plan).
 
-    private static readonly string[] ActMarkers = { "[PRIMO ATTO]", "[SECONDO ATTO]", "[TERZO ATTO]" };
+    private static readonly Regex ActMarkerRegex = new(@"\[[A-Z]+ ATTO\]", RegexOptions.Compiled | RegexOptions.CultureInvariant);
+
+    private static string[] ActMarkersIn(string body) =>
+        ActMarkerRegex.Matches(body).Select(m => m.Value).Distinct().ToArray();
 
     private static string ExtractAct(string body, int actIndex)
     {
-        var start = body.IndexOf(ActMarkers[actIndex], StringComparison.Ordinal);
+        var markers = ActMarkersIn(body);
+        if (actIndex >= markers.Length) return body;
+        var start = body.IndexOf(markers[actIndex], StringComparison.Ordinal);
         if (start < 0) return body;
-        start += ActMarkers[actIndex].Length;
-        var end = actIndex + 1 < ActMarkers.Length
-            ? body.IndexOf(ActMarkers[actIndex + 1], StringComparison.Ordinal)
+        start += markers[actIndex].Length;
+        var end = actIndex + 1 < markers.Length
+            ? body.IndexOf(markers[actIndex + 1], StringComparison.Ordinal)
             : body.Length;
         return end < 0 ? body[start..] : body[start..end];
     }
@@ -310,26 +336,25 @@ internal static class PodcastScript
     {
         var act = ExtractAct(body, actIndex);
         // Exclude the markers themselves from the measurement.
-        foreach (var m in ActMarkers) act = act.Replace(m, "");
+        foreach (var m in ActMarkersIn(body)) act = act.Replace(m, "");
         return act.Length;
     }
 
     private static string ReplaceAct(string body, int actIndex, string newAct)
     {
-        var start = body.IndexOf(ActMarkers[actIndex], StringComparison.Ordinal);
+        var markers = ActMarkersIn(body);
+        if (actIndex >= markers.Length) return body;
+        var start = body.IndexOf(markers[actIndex], StringComparison.Ordinal);
         if (start < 0) return body;
-        var end = actIndex + 1 < ActMarkers.Length
-            ? body.IndexOf(ActMarkers[actIndex + 1], StringComparison.Ordinal)
+        var end = actIndex + 1 < markers.Length
+            ? body.IndexOf(markers[actIndex + 1], StringComparison.Ordinal)
             : body.Length;
         if (end < 0) end = body.Length;
-        return body[..start] + ActMarkers[actIndex] + "\n" + newAct + body[end..];
+        return body[..start] + markers[actIndex] + "\n" + newAct + body[end..];
     }
 
-    private static string StripActMarkers(string text)
-    {
-        foreach (var m in ActMarkers) text = text.Replace(m, "");
-        return text.Trim();
-    }
+    private static string StripActMarkers(string text) =>
+        ActMarkerRegex.Replace(text, "").Trim();
 
     /// <summary>When the output hits the token cap mid-flow, cuts at the last sentence
     /// boundary so the act ends cleanly (the next act continues from the seam).</summary>

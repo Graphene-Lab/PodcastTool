@@ -136,21 +136,29 @@ If the brief call fails, the fallback is the deduplicated raw material capped at
 
 - Every act prompt carries the full narrative style spec (hook, short sentences, explicit
   irony markers, `[pausa musicale]`/`[breve silenzio]` cues every 150-200 characters, no
-  bullets/emoji), the act title + beats + target length, and — except for act 1 — the last
-  300 characters of the previous act as a **seam** so the transition reads as one story.
+  bullets/emoji), the act title + beats + the DETERMINISTIC target length, and — except for
+  act 1 — the last 300 characters of the previous act as a **seam** so the transition reads
+  as one story.
+- **Episode duration is deterministic** (`PodcastConfig`/`PodcastLengths`): the user sets
+  only `durationMinutes` in `podcast.json` (default 30); the act count (round
+  (duration−2)/9.333, clamped [3,6]), the equal per-act character target (actsMinutes × 833 /
+  actCount) and the 3× research budget are all derived. After each act the cumulative
+  difference vs the cumulative prediction is applied to the NEXT act's target (bounded to
+  50-150% of the base), so the total converges to the configured duration without ever
+  trimming the narrative. The LLM never decides the lengths. The config file is never
+  overwritten (the plugin updater skips `.json` files).
 - The output length is NOT capped with maxToken: truncating mid-act could sever the narrative
   and the provider's cap enforcement proved unreliable. The model writes each act fully.
   **Episodes are kept whole** (the operating rule: never cut the narrative for the minute) —
-  the length follows the writer, typically 25,000-37,000 characters (30-45 minutes). The only
-  guard is a safety ceiling for pathological over-length: above **1.5x** the target the last
-  act is shortened at a sentence boundary (the least destructive point) landing at **1.3x**,
-  and a generated **outro** closes the episode so it never ends mid-flow. The trim runs AFTER
-  the enrichment (a trim before it would be undone and waste two LLM passes).
+  the deterministic targets keep the total on schedule; the final duration lands within a few
+  minutes of the configured value. There is NO length trim and no outro repair: the
+  correction happens at write time, the narrative always stays whole.
 - Every act prompt and the intro state **today's date** (UTC) as the temporal reference — the
   writer must know whether an event "on 28 August" is today, past or upcoming; the planner and
   the brief already carry it.
-- The act markers (`[PRIMO ATTO]`, `[SECONDO ATTO]`, `[TERZO ATTO]`) are inserted
-  deterministically by the code, not requested from the model.
+- The act markers (`[PRIMO ATTO]`, `[SECONDO ATTO]`, … up to `[SESTO ATTO]`) are inserted
+  deterministically by the code, not requested from the model; the measurement/extraction
+  helpers discover them from the body, so any act count works.
 - After all acts, the length is measured per act (markers excluded). Acts below 80% of
   their target are **expanded inline** ("add narrative considerations that deepen the
   existing beats") — a bounded fallback, at most two rounds, per-act and anchored to the

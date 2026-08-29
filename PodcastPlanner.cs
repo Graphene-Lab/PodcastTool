@@ -18,9 +18,12 @@ internal sealed record PodcastPlan(bool NeedsRecentFacts, string[] SearchQueries
 /// international) and include variant phrasings because a single query returns few results.</summary>
 internal static class PodcastPlanner
 {
-    /// <summary>Plans the episode: recent-facts judgment, English search queries (boolean +
-    /// variants) and the three-act outline with per-act target lengths. Null on failure.</summary>
-    internal static PodcastPlan? Plan(string topic, string lang, int targetChars)
+    /// <summary>Plans the episode: recent-facts judgment + English queries + an
+    /// <paramref name="actCount"/>-act narrative outline. The act LENGTHS are NOT part of the
+    /// plan — they are deterministic (PodcastLengths) and imposed by the writer; every act
+    /// receives the same base <paramref name="actChars"/> (the per-act correction happens at
+    /// write time).</summary>
+    internal static PodcastPlan? Plan(string topic, string lang, int actCount, int actChars)
     {
         var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
         var langName = PodcastScript.LangName(lang);
@@ -41,16 +44,16 @@ internal static class PodcastPlanner
                synonyms because a single query returns very few results
                (e.g. "traveling AND low cost", "cheap holidays", "budget travel").
 
-            3. "acts": a three-act narrative outline. For each act: "title", 4-7 "beats" (key story
-               moments) and "targetChars" (target length in characters — the three acts must sum
-               to about {targetChars}).
+            3. "acts": a {actCount}-act narrative outline. For each act: "title" and 4-7 "beats"
+               (key story moments). The act lengths are NOT part of the plan — the writer
+               receives them deterministically.
 
             The podcast will be written in {langName}.
 
             Output exactly a JSON object with these keys: "needsRecentFacts" (boolean),
-            "searchQueries" (array of 3-6 English strings) and "acts" (array of 3 objects,
-            each with "act" (1, 2, 3), "title" (string), "beats" (array of 4-7 strings) and
-            "targetChars" (integer)). No prose, no code fences, no other keys.
+            "searchQueries" (array of 3-6 English strings) and "acts" (array of {actCount}
+            objects, each with "act" (1..{actCount}), "title" (string) and "beats" (array of
+            4-7 strings)). No prose, no code fences, no other keys.
             """,
             useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 2500, temperature: 0.3,
             forceJsonResponse: true);
@@ -83,30 +86,17 @@ internal static class PodcastPlanner
                     var beats = a.TryGetProperty("beats", out var bs) && bs.ValueKind == JsonValueKind.Array
                         ? bs.EnumerateArray().Select(b => b.GetString() ?? "").Where(b => b.Length > 0).ToArray()
                         : Array.Empty<string>();
-                    var chars = a.TryGetProperty("targetChars", out var tc) && tc.ValueKind == JsonValueKind.Number
-                        ? tc.GetInt32() : targetChars / 3;
-                    acts.Add(new ActPlan(acts.Count + 1, title, beats, chars));
+                    // The length is DETERMINISTIC — the LLM's "targetChars" (if any) is ignored.
+                    acts.Add(new ActPlan(acts.Count + 1, title, beats, actChars));
                 }
             }
             if (acts.Count == 0)
             {
-                var third = targetChars / 3;
-                acts.Add(new ActPlan(1, "Act one", Array.Empty<string>(), third));
-                acts.Add(new ActPlan(2, "Act two", Array.Empty<string>(), third));
-                acts.Add(new ActPlan(3, "Act three", Array.Empty<string>(), targetChars - 2 * third));
+                for (int n = 1; n <= actCount; n++)
+                    acts.Add(new ActPlan(n, $"Act {n}", Array.Empty<string>(), actChars));
             }
 
-            // Normalize the per-act targets so they always sum to the episode target.
-            var total = acts.Sum(a => a.TargetChars);
-            if (total != targetChars)
-            {
-                var scale = (double)targetChars / total;
-                var scaled = acts.Select(a => (int)(a.TargetChars * scale)).ToArray();
-                scaled[^1] += targetChars - scaled.Sum();
-                acts = acts.Select((a, i) => a with { TargetChars = scaled[i] }).ToList();
-            }
-
-            Log.LogStep($"PodcastPlanner: needsRecentFacts={needsRecent}, {queries.Count} queries, {acts.Count} acts");
+            Log.LogStep($"PodcastPlanner: needsRecentFacts={needsRecent}, {queries.Count} queries, {acts.Count} acts (target {actChars} chars/act)");
             return new PodcastPlan(needsRecent, queries.ToArray(), acts.ToArray());
         }
         catch (Exception ex)
