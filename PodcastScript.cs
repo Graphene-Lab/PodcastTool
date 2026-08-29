@@ -181,7 +181,8 @@ internal static class PodcastScript
 
             Write a SHORT farewell outro (2 to 4 sentences, at most 400 characters) closing a
             podcast episode about "{topic}" in {LangName(lang)}. {farewell} Thank them for
-            listening, hint at the next episode and leave a warm closing thought.
+            listening and leave a warm closing thought. Do NOT announce what a future episode
+            will cover — the next episode is not planned, inventing one would be false.
             Plain flowing prose, no emoji, no markers, no bullets.
             """,
             useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 500, temperature: 0.7);
