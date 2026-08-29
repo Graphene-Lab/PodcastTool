@@ -32,7 +32,13 @@ for (int i = 0; i < args.Length; i++)
 }
 var topic = string.Join(" ", topicArgs);
 
-Setup.DocumentsPath = Path.Combine(Path.GetTempPath(), "podcasttool-workspace");
+// The workspace must NOT live in %TEMP%: Windows Storage Sense ("delete temporary files")
+// wipes %TEMP% while long podcast runs are in progress, silently deleting the script and
+// breaking the final mix (verified 2026-08-29 — a 7-hour run lost its output this way).
+// PODCAST_WORKSPACE overrides the default; point it at a stable folder (e.g. D:\).
+Setup.DocumentsPath = Environment.GetEnvironmentVariable("PODCAST_WORKSPACE") is { Length: > 0 } ws
+    ? ws
+    : Path.Combine(Path.GetTempPath(), "podcasttool-workspace");
 Directory.CreateDirectory(Setup.DocumentsPath);
 InitGitWorkspace(Setup.DocumentsPath);
 
