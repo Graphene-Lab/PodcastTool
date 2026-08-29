@@ -32,6 +32,12 @@
        is restored — required for CI/standalone builds where the sibling sources are absent. -->
   <ItemGroup>
     <ProjectReference Include="..\AIOrchestrator\AIOrchestrator.csproj" Condition="Exists('..\AIOrchestrator\AIOrchestrator.csproj')" />
+    <!-- Qwen3-TTS FORK (Andrea-Bruno/ElBruno.QwenTTS on D: — C: is nearly full): the local
+         fork wins when present; it adds the catalog entries the author's package lacks
+         (german/french/portuguese/italian, PR elbruno/ElBruno.QwenTTS#74). Without it the
+         NuGet fallback applies and PodcastQwenTts falls back to "auto" (still Italian via
+         the model's auto-detect). -->
+    <ProjectReference Include="D:\ElBruno.QwenTTS\src\ElBruno.QwenTTS.Core\ElBruno.QwenTTS.Core.csproj" Condition="Exists('D:\ElBruno.QwenTTS\src\ElBruno.QwenTTS.Core\ElBruno.QwenTTS.Core.csproj')" />
   </ItemGroup>
   <ItemGroup>
     <!-- Nested test projects must not compile into the library (AGENT_TOOLS_GUIDE §5). -->
