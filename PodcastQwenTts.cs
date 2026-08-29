@@ -1,3 +1,5 @@
+using System.Diagnostics;
+using System.Reflection;
 using ElBruno.QwenTTS.Pipeline;
 
 namespace AIOrchestrator.API;
@@ -96,6 +98,16 @@ internal static class PodcastQwenTts
         lock (Sync)
         {
             if (_pipeline != null || _unavailableReason != null) return;
+            // Release gate (plugin-local copy of the shared TtsEngineSupport — the packed
+            // plugin compiles against the published Graphene.AIOrchestrator): Qwen3-TTS is
+            // ~0.1x realtime on CPU, so in release builds it is offered only on NVIDIA GPUs
+            // with ≥16 GB VRAM; debug builds (the test harness) always allow it. Gating here
+            // also avoids triggering the ~5.5 GB model download on unsupported machines.
+            if (!QwenTtsSupported(out var gateReason))
+            {
+                _unavailableReason = gateReason;
+                return;
+            }
             try
             {
                 _pipeline = TtsPipeline.CreateAsync(modelDir: null).GetAwaiter().GetResult();
@@ -105,5 +117,59 @@ internal static class PodcastQwenTts
                 _unavailableReason = $"QwenTTS initialization failed: {ex.Message}";
             }
         }
+    }
+
+    /// <summary>True when the RUNNING app (entry assembly) is a Debug build — the gate follows
+    /// the launched app, not the plugin's own configuration.</summary>
+    private static bool IsDebugBuild =>
+        string.Equals(Assembly.GetEntryAssembly()?.GetCustomAttribute<AssemblyConfigurationAttribute>()?.Configuration,
+            "Debug", StringComparison.OrdinalIgnoreCase);
+
+    /// <summary>Total VRAM of the primary NVIDIA GPU in bytes (0 = undetectable).</summary>
+    private static long NvidiaVramBytes
+    {
+        get
+        {
+            try
+            {
+                using var p = Process.Start(new ProcessStartInfo("nvidia-smi",
+                    "--query-gpu=memory.total --format=csv,noheader,nounits")
+                {
+                    RedirectStandardOutput = true,
+                    RedirectStandardError = true,
+                    UseShellExecute = false,
+                    CreateNoWindow = true,
+                });
+                if (p == null) return 0;
+                if (!p.WaitForExit(5000)) { try { p.Kill(); } catch { } return 0; }
+                var line = p.StandardOutput.ReadLine()?.Trim();
+                return long.TryParse(line, out var mb) && mb > 0 ? mb * 1024 * 1024 : 0;
+            }
+            catch { return 0; }
+        }
+    }
+
+    /// <summary>Release builds require an NVIDIA GPU with ≥16 GB VRAM for Qwen3-TTS (the engine
+    /// is ~0.1x realtime on CPU); debug builds allow it for testing.</summary>
+    private static bool QwenTtsSupported(out string reason)
+    {
+        if (IsDebugBuild)
+        {
+            reason = "Debug build — Qwen3-TTS allowed for testing";
+            return true;
+        }
+        var vramGb = NvidiaVramBytes / 1024d / 1024d / 1024d;
+        if (vramGb <= 0)
+        {
+            reason = "Qwen3-TTS needs an NVIDIA GPU with ≥16 GB VRAM (none detected)";
+            return false;
+        }
+        if (vramGb < 16)
+        {
+            reason = $"Qwen3-TTS needs an NVIDIA GPU with ≥16 GB VRAM (this GPU has {vramGb:0.#} GB)";
+            return false;
+        }
+        reason = "NVIDIA GPU with ≥16 GB VRAM detected";
+        return true;
     }
 }
