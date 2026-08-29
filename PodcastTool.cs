@@ -73,8 +73,11 @@ public class PodcastTool : BaseAgentTool, IFileTool
             if (string.IsNullOrWhiteSpace(body))
                 return "Error: the language model did not produce the episode script. Retry later.";
 
-            // 5) Intro: generated AFTER the body so it announces the themes actually covered.
+            // 5) Intro + outro: generated AFTER the body (the intro announces the themes
+            //    actually covered; the outro is the host farewell — "Avete ascoltato <podcast>"
+            //    — followed in the mix by a very short closing musical stinger).
             var intro = PodcastScript.GenerateIntro(topic, lang, podcastName, body);
+            var outro = PodcastScript.GenerateOutro(topic, lang, podcastName);
 
             // Save: /podcast/{podcastName or topic}/{topic}-{date}.md + .mp3
             var folderName = Slug(string.IsNullOrWhiteSpace(podcastName) ? topic : podcastName);
@@ -83,7 +86,7 @@ public class PodcastTool : BaseAgentTool, IFileTool
             var date = DateTime.UtcNow.ToString("yyyyMMdd");
             var fileBase = $"{Slug(topic)}-{date}";
 
-            var script = $"{intro}\n\n[SIGLA]\n\n{body}";
+            var script = $"{intro}\n\n[SIGLA]\n\n{body}\n\n[OUTRO]\n\n{outro}";
             var chars = script.Length;
             var estMinutes = (int)Math.Round(chars / 830.0);   // ~830 chars/min of speech
             var scriptPath = Path.Combine(dir, fileBase + ".md");
@@ -98,7 +101,10 @@ public class PodcastTool : BaseAgentTool, IFileTool
             {
                 var wavPath = Path.Combine(dir, fileBase + ".wav");
                 var mp3Path = Path.Combine(dir, fileBase + ".mp3");
-                if (PodcastMixer.Mix(intro, body, lang, wavPath, mp3Path, out audioSeconds))
+                // The outro rides in the body stream ([OUTRO] marker → gap → farewell), after
+                // which the mixer appends the very short closing stinger.
+                var mixBody = $"{body}\n\n[OUTRO]\n\n{outro}";
+                if (PodcastMixer.Mix(intro, mixBody, lang, wavPath, mp3Path, out audioSeconds))
                 {
                     GitSupport.Snapshot(mp3Path, $"PodcastTool: audio for '{topic}'");
                     mp3Agent = SandboxPath.ToAgent(mp3Path);

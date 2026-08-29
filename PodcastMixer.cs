@@ -51,6 +51,7 @@ internal static partial class PodcastMixer
         var narration = new List<byte>(sampleRate * 2 * 60);   // int16 mono
         var currentSec = 0.0;
         var jingleStartSec = -1.0;
+        var stingerStartSec = -1.0;
 
         void AppendPcm(byte[] pcm)
         {
@@ -107,12 +108,19 @@ internal static partial class PodcastMixer
             AppendPcm(Speak(token, lang));
         }
 
+        // 1b) The closing stinger: a very short final musical hit right after the outro speech
+        //    (0.6 s breath, then the last ~3 s of the sigla with a fade-out).
+        var stingerDuration = Math.Min(3.0, jingleDuration);
+        AppendSilence(0.6);
+        stingerStartSec = currentSec;
+        AppendSilence(stingerDuration);
+
         if (narration.Count == 0)
         {
             LastError = "the script contains no speakable text.";
             return false;
         }
-        Log.LogStep($"PodcastMixer: narration {(double)narration.Count / 2 / sampleRate:F0}s, jingle at {jingleStartSec:F0}s (jingle {jingleDuration:F0}s)");
+        Log.LogStep($"PodcastMixer: narration {(double)narration.Count / 2 / sampleRate:F0}s, jingle at {jingleStartSec:F0}s (jingle {jingleDuration:F0}s), stinger at {stingerStartSec:F0}s");
 
         // 2) Mix: narration (int16 mono 24 kHz → 48 kHz stereo) + jingle at its slot (fade
         //    out) + ducked background loop.
@@ -121,6 +129,10 @@ internal static partial class PodcastMixer
         long totalFrames48 = (long)narrationFrames24 * 2;
         var jingleStartFrame = jingleStartSec >= 0 ? (long)(jingleStartSec * outRate) : -1L;
         var bodyStartFrame = jingleStartFrame >= 0 ? jingleStartFrame + jingle.Length / 2 : 0L;   // the bed starts with the body
+        // The closing stinger: the LAST ~3 s of the sigla, played after the outro with a fade-out.
+        var stingerLen = (int)(stingerDuration * outRate);
+        var stingerOffset = jingle.Length / 2 - stingerLen;   // slice index into the jingle
+        var stingerStartFrame = stingerStartSec >= 0 ? (long)(stingerStartSec * outRate) : -1L;
         var fadeOutSamples = (int)(outRate * 0.6);
         var bgFadeIn = (int)(outRate * 0.5);
         var bgFadeOut = (int)(outRate * 1.0);
@@ -145,16 +157,21 @@ internal static partial class PodcastMixer
 
                     // Ducking: the bed exists only under the body — the intro and the jingle
                     // are clean. Under the voice it drops to "barely perceptible", rising in
-                    // the pauses.
+                    // the pauses. The closing stinger replaces the bed entirely.
                     var g = 0f;
                     if (idx >= bodyStartFrame)
                     {
-                        var target = Math.Abs(voice) > voiceThreshold ? BackgroundWhileSpeaking : BackgroundInPause;
-                        bgGain += (target - bgGain) * 0.01f;  // smooth attack/release
-                        g = bgGain;
-                        var t = idx - bodyStartFrame;
-                        if (t < bgFadeIn) g *= t / (float)bgFadeIn;
-                        if (idx > totalFrames48 - bgFadeOut) g *= (totalFrames48 - idx) / (float)bgFadeOut;
+                        if (stingerStartFrame >= 0 && idx >= stingerStartFrame)
+                            g = 0;   // the final stinger is clean
+                        else
+                        {
+                            var target = Math.Abs(voice) > voiceThreshold ? BackgroundWhileSpeaking : BackgroundInPause;
+                            bgGain += (target - bgGain) * 0.01f;  // smooth attack/release
+                            g = bgGain;
+                            var t = idx - bodyStartFrame;
+                            if (t < bgFadeIn) g *= t / (float)bgFadeIn;
+                            if (idx > totalFrames48 - bgFadeOut) g *= (totalFrames48 - idx) / (float)bgFadeOut;
+                        }
                     }
 
                     var bf = (int)(idx % (background.Length / 2));
@@ -175,8 +192,23 @@ internal static partial class PodcastMixer
                         }
                     }
 
-                    var l = voice + bL + jL;
-                    var r = voice + bR + jR;
+                    // The closing stinger: the last ~3 s of the sigla, fading out.
+                    float sL = 0f, sR = 0f;
+                    if (stingerStartFrame >= 0)
+                    {
+                        var sfs = idx - stingerStartFrame;
+                        if (sfs >= 0 && sfs < stingerLen)
+                        {
+                            var sg = 1f;
+                            if (sfs > stingerLen - fadeOutSamples)
+                                sg = (stingerLen - sfs) / (float)fadeOutSamples;
+                            sL = jingle[(stingerOffset + sfs) * 2] / 32768f * sg;
+                            sR = jingle[(stingerOffset + sfs) * 2 + 1] / 32768f * sg;
+                        }
+                    }
+
+                    var l = voice + bL + jL + sL;
+                    var r = voice + bR + jR + sR;
                     block[k * 2] = (short)Math.Clamp((int)(l * 32768f), short.MinValue, short.MaxValue);
                     block[k * 2 + 1] = (short)Math.Clamp((int)(r * 32768f), short.MinValue, short.MaxValue);
                 }

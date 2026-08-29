@@ -199,11 +199,13 @@ internal static class PodcastTts
 
     /// <summary>Creates the synthesizer with CUDA acceleration when the GPU provider is
     /// available, falling back to the CPU provider otherwise — the plugin must work on
-    /// machines without a CUDA GPU. The CPU fallback is what ships today (KokoroSharp.CPU);
-    /// adding the CUDA runtime (KokoroSharp.GPU.Windows + CUDA Toolkit 12 + cuDNN) enables
-    /// the GPU path automatically.</summary>
+    /// machines without a CUDA GPU. The CUDA toolkit is enabled AUTOMATICALLY when installed
+    /// (no manual PATH setup — <see cref="TryEnableCudaToolkit"/>); the GPU requires the GPU
+    /// ONNX Runtime build in the HOST (KokoroSharp.GPU.Windows) — with the CPU runtime the CUDA
+    /// EP is not present and the fallback logs the reason.</summary>
     private static KokoroWavSynthesizer CreateSynthesizer(string modelPath)
     {
+        TryEnableCudaToolkit();
         try
         {
             var gpu = new SessionOptions();
@@ -212,11 +214,40 @@ internal static class PodcastTts
             Log.LogStep("PodcastTts: CUDA execution provider active");
             return synth;
         }
-        catch
+        catch (Exception ex)
         {
             // CUDA provider missing or CUDA toolkit absent → CPU (the library defaults).
+            Log.LogStep($"PodcastTts: CUDA unavailable ({ex.Message}) — CPU fallback");
             return new KokoroWavSynthesizer(modelPath);
         }
+    }
+
+    /// <summary>Windows: probes the installed CUDA toolkit + cuDNN directories and prepends
+    /// them to the process PATH (the CUDA EP locates the runtime libs via the PATH; the
+    /// toolkit installer never adds the cuDNN bin — the classic "cublasLt64_12.dll missing").
+    /// A safe no-op when CUDA is absent.</summary>
+    private static void TryEnableCudaToolkit()
+    {
+        try
+        {
+            if (!OperatingSystem.IsWindows()) return;
+            var programFiles = Environment.GetFolderPath(Environment.SpecialFolder.ProgramFiles);
+            var cudaRoot = Path.Combine(programFiles, "NVIDIA GPU Computing Toolkit", "CUDA");
+            var cudnnRoot = Path.Combine(programFiles, "NVIDIA", "CUDNN");
+            string? cudaBin = null, cudnnBin = null;
+            if (Directory.Exists(cudaRoot))
+                cudaBin = Directory.GetDirectories(cudaRoot)
+                    .SelectMany(d => Directory.GetDirectories(d, "bin")).FirstOrDefault();
+            if (Directory.Exists(cudnnRoot))
+                cudnnBin = Directory.GetDirectories(cudnnRoot)
+                    .SelectMany(d => Directory.GetDirectories(Path.Combine(d, "bin"))).FirstOrDefault();
+            if (cudaBin == null) return;
+            var path = Environment.GetEnvironmentVariable("PATH") ?? "";
+            if (path.Contains(cudaBin, StringComparison.OrdinalIgnoreCase)) return;
+            var add = cudnnBin != null ? cudaBin + ";" + cudnnBin : cudaBin;
+            Environment.SetEnvironmentVariable("PATH", add + ";" + path);
+        }
+        catch { }
     }
 
     /// <summary>Picks the best loaded voice for a language (two-letter ISO), falling back to

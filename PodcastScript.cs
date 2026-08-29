@@ -165,6 +165,46 @@ internal static class PodcastScript
             : $"Welcome. Today we talk about {topic}.";
     }
 
+    /// <summary>Writes the short host farewell that closes the episode ("Avete ascoltato
+    /// [podcast name]... grazie e alla prossima") — generated AFTER the body, in the episode
+    /// language, with a language-aware fallback. The mixing appends a very short musical
+    /// stinger right after it.</summary>
+    internal static string GenerateOutro(string topic, string lang, string? podcastName)
+    {
+        var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
+        var farewell = string.IsNullOrWhiteSpace(podcastName)
+            ? "Tell the listeners they have been listening to this episode."
+            : $"Tell the listeners they have been listening to \"{podcastName}\".";
+        var (text, error) = llm.SendQuery(
+            $"""
+            Today's date is {DateTime.UtcNow:yyyy-MM-dd} (UTC) — use it as the temporal reference.
+
+            Write a SHORT farewell outro (2 to 4 sentences, at most 400 characters) closing a
+            podcast episode about "{topic}" in {LangName(lang)}. {farewell} Thank them for
+            listening, hint at the next episode and leave a warm closing thought.
+            Plain flowing prose, no emoji, no markers, no bullets.
+            """,
+            useHistory: false, role: LLMUtility.SystemRole.None, maxToken: 500, temperature: 0.7);
+        if (error == null && !string.IsNullOrWhiteSpace(text))
+        {
+            var outro = FilterEmoji(text).Trim();
+            if (outro.Length > 0)
+            {
+                Log.LogStep($"PodcastScript: outro → {outro.Length:N0} chars");
+                return outro;
+            }
+        }
+        // Language-aware fallback (the model call failed — never leave an English podcast with
+        // an Italian farewell).
+        return string.IsNullOrWhiteSpace(podcastName)
+            ? lang == "it"
+                ? "E con questo episodio il nostro viaggio si conclude. Grazie per l'ascolto, e alla prossima."
+                : "And with this episode our journey comes to an end. Thank you for listening, see you next time."
+            : lang == "it"
+                ? $"Avete ascoltato \"{podcastName}\". Grazie per l'ascolto, e alla prossima."
+                : $"You have been listening to \"{podcastName}\". Thank you for listening, see you next time.";
+    }
+
     /// <summary>Removes emoji and symbols deterministically (no LLM) while keeping the ASCII
     /// [markers] and the punctuation the TTS needs. Same filter as the voice pipeline.</summary>
     internal static string FilterEmoji(string text)
