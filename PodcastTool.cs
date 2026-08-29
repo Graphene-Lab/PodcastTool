@@ -32,10 +32,13 @@ public class PodcastTool : BaseAgentTool, IFileTool
     /// <param name="contextualMaterial">If necessary you can pass some text that will be used
     /// as material to create the podcast (it can be provided by the user as a result of a
     /// search), it is an optional parameter. The text joins the gathered research context.</param>
+    /// <param name="minimizeAcronyms">When true (default) the writer expands every acronym and
+    /// abbreviation to its full form ("Bitcoin" not "BTC") — TTS engines often mispronounce
+    /// them. Set false when the script may keep the compact forms.</param>
     /// <returns>The sandbox-relative paths of the saved MP3 (to attach to the user reply),
     /// script and podcast RSS feed, with their lengths; failures are returned as
     /// "Error: ..." with the cause.</returns>
-    public string GeneratePodcast(string topic, string? language = null, string? podcastName = null, string? contextualMaterial = null)
+    public string GeneratePodcast(string topic, string? language = null, string? podcastName = null, string? contextualMaterial = null, bool minimizeAcronyms = true)
     {
         var sw = Stopwatch.StartNew();
         Log.LogStep($"PodcastTool: generating podcast about '{topic}' (lang={language ?? "auto"}, name={podcastName ?? "none"})");
@@ -68,8 +71,9 @@ public class PodcastTool : BaseAgentTool, IFileTool
             if (string.IsNullOrWhiteSpace(brief))
                 return "Error: no information about this topic could be gathered. Retry later or choose a broader topic.";
 
-            // 4) Body: act by act (enrichment fallback is internal).
-            var body = PodcastScript.Generate(topic, lang, brief, plan, targetChars);
+            // 4) Body: act by act (enrichment fallback is internal). minimizeAcronyms defaults
+            //    true: the writer expands acronyms/abbreviations (TTS pronounces them wrongly).
+            var body = PodcastScript.Generate(topic, lang, brief, plan, targetChars, minimizeAcronyms);
             if (string.IsNullOrWhiteSpace(body))
                 return "Error: the language model did not produce the episode script. Retry later.";
 

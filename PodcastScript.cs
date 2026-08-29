@@ -30,11 +30,16 @@ internal static class PodcastScript
         """;
 
     /// <summary>Writes the body act by act (the act markers are added deterministically by the
-    /// caller). Returns null when the first act fails.</summary>
-    internal static string? Generate(string topic, string lang, string brief, PodcastPlan plan, int targetChars)
+    /// caller). Returns null when the first act fails. When <paramref name="minimizeAcronyms"/>
+    /// is true (default) the style instructs the writer to expand every acronym and abbreviation
+    /// — TTS engines often mispronounce them ("Bitcoin" not "BTC").</summary>
+    internal static string? Generate(string topic, string lang, string brief, PodcastPlan plan, int targetChars, bool minimizeAcronyms = true)
     {
         var llm = new LLMUtility(Setup.ProviderConfig.ProviderName);
         var langName = LangName(lang);
+        var style = StyleSpec;
+        if (minimizeAcronyms)
+            style += "\n- NO acronyms or initialisms: expand every abbreviation and acronym to its full form (write \"Bitcoin\", not \"BTC\").";
         var sb = new StringBuilder();
         string[] markers = { "[PRIMO ATTO]", "[SECONDO ATTO]", "[TERZO ATTO]" };
 
@@ -49,7 +54,7 @@ internal static class PodcastScript
                 reference for any event mentioned (an event "on 28 August" is today, a past or
                 upcoming date is anchored to this day).
 
-                {StyleSpec}
+                {style}
 
                 Episode topic: {topic}.
                 You are writing ACT {act.Act} of the episode, in {langName}.
@@ -100,7 +105,7 @@ internal static class PodcastScript
                 if (act.TargetChars <= 0 || MeasureAct(body, i) >= act.TargetChars * 0.8) continue;
                 var (enriched, err) = llm.SendQuery(
                     $"""
-                    {StyleSpec}
+                    {style}
 
                     The {Ordinal(act.Act)} act of the podcast episode about "{topic}" (in {langName}) is
                     shorter than its target ({MeasureAct(body, i)} vs ~{act.TargetChars} characters).
