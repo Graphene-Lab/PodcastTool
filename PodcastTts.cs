@@ -51,9 +51,18 @@ internal static class PodcastTts
 
         lock (Sync)
         {
-            return _synth.Synthesize(text, voice);
+            // First-segment budget = the model's full 510-token context: a whole sentence
+            // (up to ~470 chars) stays ONE segment — the default 200-token budget cut our
+            // ~200-char chunks mid-clause (22% of a typical episode).
+            return _synth.Synthesize(text, voice, PipelineConfig);
         }
     }
+
+    /// <summary>Shared pipeline config: first segment up to the model's full context, so the
+    /// internal segmentation never cuts a sentence-sized chunk (its cut preference allows
+    /// commas/spaces as fallbacks — with our chunks within budget it never fires).</summary>
+    private static readonly KokoroTTSPipelineConfig PipelineConfig =
+        new(new DefaultSegmentationConfig { MaxFirstSegmentLength = 510 });
 
     /// <summary>Plugin-local TTS normalization (the shared VoiceConversation.NormalizeForTts
     /// replaces it once Graphene.AIOrchestrator ≥ 1.26.08.29 ships — the packed plugin must
