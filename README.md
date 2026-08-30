@@ -68,6 +68,33 @@ correction is bounded to 50–150% of the base so a single large overrun cannot 
 unusable act). Episodes are never cut: the correction happens at write time, the narrative
 stays whole, and the final duration lands within a few minutes of the configured value.
 
+## Qwen3-TTS voice behavior (optional)
+
+When the podcast uses the Qwen3-TTS engine (`PODCAST_TTS_ENGINE=qwen` or the host's
+preferred-TTS setting), the voice is kept a **flat, neutral newsreader** by default. The
+0.6B model has **no instruction control** (emotion/rate instructions are ignored — that is a
+1.7B-only feature, per the official model card), so the neutrality comes from the **sampling
+settings** in `podcast.json` → `qwenTts`:
+
+```json
+{
+  "durationMinutes": 30,
+  "qwenTts": {
+    "temperature": 0.5,
+    "seed": 20260830
+  }
+}
+```
+
+| Setting | Default | Meaning |
+|---|---|---|
+| `qwenTts.temperature` | `0.5` | Sampling temperature for the talker LM + code predictor. Lower = calmer, more neutral prosody (the model default is `0.9` and re-rolls emotional contours). Range 0–2. |
+| `qwenTts.seed` | `20260830` | Fixes the sampler, so the **same script always produces the same audio** (reproducible, no run-to-run surprises). Change the number for a different but still deterministic prosody. Set `null` to restore the model's stochastic behavior. |
+
+On a machine with the **1.7B** model (which supports instruction control) the engine also
+passes a neutral "newsreader" style instruction automatically. The file is created with these
+defaults on first use and is never overwritten by plugin updates.
+
 ## Methods
 
 | Method | Purpose |

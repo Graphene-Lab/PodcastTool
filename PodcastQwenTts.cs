@@ -49,7 +49,7 @@ internal static class PodcastQwenTts
         if (string.IsNullOrWhiteSpace(text)) return Array.Empty<byte>();
         try
         {
-            var result = _pipeline.SynthesizeToPcmAsync(text, Speaker, ResolveLanguage(lang)).GetAwaiter().GetResult();
+            var result = _pipeline.SynthesizeToPcmAsync(text, Speaker, ResolveLanguage(lang), NeutralInstruct).GetAwaiter().GetResult();
             var samples = result.Samples.Span;
             var pcm = new byte[samples.Length * 2];
             for (int i = 0; i < samples.Length; i++)
@@ -92,6 +92,51 @@ internal static class PodcastQwenTts
         _ => "auto",
     };
 
+    /// <summary>Style instruction that keeps the voice a flat, neutral newsreader (no random
+    /// emotions). The 0.6B model IGNORES it — the official code nulls `instruct` for 0b6 and
+    /// the wrapper warns per chunk — so it is passed only when the loaded model variant
+    /// supports instruction control (the 1.7B CustomVoice). On 0.6B the neutrality comes from
+    /// <see cref="TryApplyNeutralSampling"/> (lower temperature + deterministic seed).</summary>
+    private static string? NeutralInstruct
+    {
+        get
+        {
+            try
+            {
+                return _pipeline != null && QwenModelVariantConfig.SupportsInstruct(_pipeline.ModelVariant)
+                    ? "Speak in a neutral, calm, professional newsreader tone. No emotion, no enthusiasm, no emphasis. Keep a flat intonation throughout; use only a natural rising intonation for questions."
+                    : null;
+            }
+            catch { return null; }
+        }
+    }
+
+    /// <summary>Applies the neutral-prosody sampling (lower temperature + deterministic seed)
+    /// when the engine exposes it (the local fork's QwenSamplingOptions). Values come from the
+    /// tool config (podcast.json → "qwenTts" — temperature, seed; defaults 0.5 / fixed seed).
+    /// The published NuGet package does not have the API yet, so it is configured via
+    /// reflection and silently skipped when absent — the packaged plugin must compile against
+    /// the published API surface. A null seed (JSON "seed": null) keeps stochastic prosody.</summary>
+    private static void TryApplyNeutralSampling(TtsPipeline pipeline)
+    {
+        try
+        {
+            var prop = typeof(TtsPipeline).GetProperty("SamplingOptions");
+            if (prop == null || !prop.CanWrite) return;
+            var options = Activator.CreateInstance(prop.PropertyType);
+            if (options == null) return;
+            prop.PropertyType.GetProperty("Temperature")?.SetValue(options, PodcastConfig.QwenTemperature);
+            var seed = PodcastConfig.QwenSeed;
+            if (seed.HasValue)
+                prop.PropertyType.GetProperty("Seed")?.SetValue(options, seed.Value);
+            prop.SetValue(pipeline, options);
+        }
+        catch
+        {
+            // Sampling API absent or changed — keep the engine defaults.
+        }
+    }
+
     private static void EnsureInitialized()
     {
         if (_pipeline != null || _unavailableReason != null) return;
@@ -111,6 +156,7 @@ internal static class PodcastQwenTts
             try
             {
                 _pipeline = TtsPipeline.CreateAsync(modelDir: null).GetAwaiter().GetResult();
+                TryApplyNeutralSampling(_pipeline);
             }
             catch (Exception ex)
             {

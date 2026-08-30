@@ -17,6 +17,7 @@ using System.Diagnostics;
 
 var selftest = args.Contains("--selftest");
 var sampleOut = Arg(args, "--sample");
+var qwenProbeOut = Arg(args, "--qwen-probe");
 var provider = Arg(args, "--provider") ?? "DeepSeekBridge";
 var podcastName = Arg(args, "--name");
 var language = Arg(args, "--language");
@@ -25,7 +26,7 @@ for (int i = 0; i < args.Length; i++)
 {
     if (args[i].StartsWith("--"))
     {
-        if (args[i] is "--provider" or "--name" or "--language") i++;   // skip the flag's value
+        if (args[i] is "--provider" or "--name" or "--language" or "--sample" or "--qwen-probe") i++;   // skip the flag's value
         continue;
     }
     topicArgs.Add(args[i]);
@@ -88,6 +89,28 @@ if (sampleOut != null)
     var wav = Path.ChangeExtension(sampleOut, ".wav");
     var ok = PodcastMixer.Mix(intro, body, "en", wav, sampleOut, out _);
     Console.WriteLine(ok ? $"Sample OK: {sampleOut}" : $"Sample FAILED: {PodcastMixer.LastError}");
+    return;
+}
+
+if (qwenProbeOut != null)
+{
+    // Short Qwen3-TTS probe (CPU: a few minutes, not hours): synthesizes a handful of
+    // sentences — declarative, exclamative and interrogative — with the Qwen engine so the
+    // prosody/expressiveness can be checked by ear before committing to a full ~7 h episode.
+    // PODCAST_TTS_ENGINE is ignored here on purpose: the engine is selected programmatically.
+    Console.WriteLine($"── QWEN PROBE → {qwenProbeOut} ──");
+    PodcastTts.PreferredEngine = "qwen";
+    var probeText = "Questa è una prova di lettura con un tono neutro. Il mercato delle criptovalute ha registrato un aumento. Cosa succederà nei prossimi mesi? Nessuna emozione, solo informazione. Bitcoin ha superato i centomila dollari. È davvero una buona notizia?";
+    var probeSw = Stopwatch.StartNew();
+    var pcm = PodcastQwenTts.SynthesizePcm(probeText, "it");
+    probeSw.Stop();
+    if (pcm == null)
+    {
+        Console.WriteLine($"Probe FAILED: {PodcastQwenTts.UnavailableReason}");
+        return;
+    }
+    WriteWav16(qwenProbeOut, pcm, PodcastTts.SampleRate);
+    Console.WriteLine($"Probe OK: {qwenProbeOut} — {pcm.Length / 2:N0} samples, {pcm.Length / 2 / (double)PodcastTts.SampleRate:F1}s, synthesized in {probeSw.Elapsed.TotalSeconds:F0}s");
     return;
 }
 
@@ -201,6 +224,27 @@ static string? Arg(string[] args, string name)
     for (int i = 0; i < args.Length - 1; i++)
         if (args[i] == name) return args[i + 1];
     return null;
+}
+
+/// <summary>Writes raw 16-bit mono PCM to a WAV file (for the Qwen probe).</summary>
+static void WriteWav16(string path, byte[] pcm, int sampleRate)
+{
+    using var fs = File.Create(path);
+    using var bw = new BinaryWriter(fs);
+    bw.Write(System.Text.Encoding.ASCII.GetBytes("RIFF"));
+    bw.Write(36 + pcm.Length);
+    bw.Write(System.Text.Encoding.ASCII.GetBytes("WAVE"));
+    bw.Write(System.Text.Encoding.ASCII.GetBytes("fmt "));
+    bw.Write(16);
+    bw.Write((short)1);             // PCM
+    bw.Write((short)1);             // mono
+    bw.Write(sampleRate);
+    bw.Write(sampleRate * 2);       // byte rate
+    bw.Write((short)2);             // block align
+    bw.Write((short)16);            // bits per sample
+    bw.Write(System.Text.Encoding.ASCII.GetBytes("data"));
+    bw.Write(pcm.Length);
+    bw.Write(pcm);
 }
 
 /// <summary>git-init the temp workspace so GitSupport.Snapshot works.</summary>
