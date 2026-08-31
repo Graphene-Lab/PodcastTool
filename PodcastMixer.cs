@@ -241,8 +241,10 @@ internal static partial class PodcastMixer
     }
 
     /// <summary>Encodes a 48 kHz stereo 16-bit WAV to MP3 with GroovyMp3 (pure managed LAME
-    /// port — cross-platform, no natives), feeding the PCM in chunks and flushing at the end.</summary>
-    private static bool EncodeMp3(string wavPath, string mp3Path)
+    /// port — cross-platform, no natives), feeding the PCM in chunks and flushing at the end.
+    /// Internal: the test harness uses it to recover a mixed WAV whose MP3 encode step failed
+    /// (missing assembly in a stale incremental output) without re-synthesizing.</summary>
+    internal static bool EncodeMp3(string wavPath, string mp3Path)
     {
         try
         {

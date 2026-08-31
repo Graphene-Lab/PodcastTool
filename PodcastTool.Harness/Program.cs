@@ -18,6 +18,8 @@ using System.Diagnostics;
 var selftest = args.Contains("--selftest");
 var sampleOut = Arg(args, "--sample");
 var qwenProbeOut = Arg(args, "--qwen-probe");
+var encodeWav = Arg(args, "--encode");
+var encodeMp3 = Arg(args, "--encode-out");
 var provider = Arg(args, "--provider") ?? "DeepSeekBridge";
 var podcastName = Arg(args, "--name");
 var language = Arg(args, "--language");
@@ -26,7 +28,7 @@ for (int i = 0; i < args.Length; i++)
 {
     if (args[i].StartsWith("--"))
     {
-        if (args[i] is "--provider" or "--name" or "--language" or "--sample" or "--qwen-probe") i++;   // skip the flag's value
+        if (args[i] is "--provider" or "--name" or "--language" or "--sample" or "--qwen-probe" or "--encode" or "--encode-out") i++;   // skip the flag's value
         continue;
     }
     topicArgs.Add(args[i]);
@@ -111,6 +113,26 @@ if (qwenProbeOut != null)
     }
     WriteWav16(qwenProbeOut, pcm, PodcastTts.SampleRate);
     Console.WriteLine($"Probe OK: {qwenProbeOut} — {pcm.Length / 2:N0} samples, {pcm.Length / 2 / (double)PodcastTts.SampleRate:F1}s, synthesized in {probeSw.Elapsed.TotalSeconds:F0}s");
+    return;
+}
+
+if (encodeWav != null)
+{
+    // Recovers a mixed WAV whose MP3 encode step failed (e.g. GroovyCodecs.Mp3 missing in a
+    // stale incremental output) WITHOUT re-synthesizing: encodes the existing 48 kHz stereo
+    // WAV straight to MP3 with GroovyMp3.
+    Console.WriteLine($"── ENCODE: {encodeWav} → {encodeMp3} ──");
+    if (encodeMp3 == null || !File.Exists(encodeWav))
+    {
+        Console.WriteLine("Encode FAILED: --encode needs an existing WAV and --encode-out <mp3>");
+        return;
+    }
+    var encodeSw = Stopwatch.StartNew();
+    var ok = PodcastMixer.EncodeMp3(encodeWav, encodeMp3);
+    encodeSw.Stop();
+    Console.WriteLine(ok
+        ? $"Encode OK: {encodeMp3} — {new FileInfo(encodeMp3).Length / 1024d / 1024d:F1} MB in {encodeSw.Elapsed.TotalSeconds:F0}s"
+        : $"Encode FAILED: {PodcastMixer.LastError}");
     return;
 }
 
