@@ -32,12 +32,6 @@
        is restored — required for CI/standalone builds where the sibling sources are absent. -->
   <ItemGroup>
     <ProjectReference Include="..\AIOrchestrator\AIOrchestrator.csproj" Condition="Exists('..\AIOrchestrator\AIOrchestrator.csproj')" />
-    <!-- Qwen3-TTS FORK (Andrea-Bruno/ElBruno.QwenTTS on D: — C: is nearly full): the local
-         fork wins when present; it adds the catalog entries the author's package lacks
-         (german/french/portuguese/italian, PR elbruno/ElBruno.QwenTTS#74). Without it the
-         NuGet fallback applies and PodcastQwenTts falls back to "auto" (still Italian via
-         the model's auto-detect). -->
-    <ProjectReference Include="D:\ElBruno.QwenTTS\src\ElBruno.QwenTTS.Core\ElBruno.QwenTTS.Core.csproj" Condition="Exists('D:\ElBruno.QwenTTS\src\ElBruno.QwenTTS.Core\ElBruno.QwenTTS.Core.csproj')" />
   </ItemGroup>
   <ItemGroup>
     <!-- Nested test projects must not compile into the library (AGENT_TOOLS_GUIDE §5). -->
@@ -58,11 +52,6 @@
     <!-- GroovyMp3: pure-managed MP3 encoder (port of LAME) — cross-platform, no natives;
          encodes the mixed WAV to the final podcast MP3. -->
     <PackageReference Include="GroovyMp3" Version="0.1.3" />
-    <!-- Qwen3-TTS (alternative TTS engine, PodcastQwenTts.cs): local ONNX pipeline, model
-         (~5.5 GB, 0.6B) auto-downloaded on first use into the shared cache; 24 kHz mono output
-         matches Kokoro so the mixer accepts it unchanged. The podcast picks Kokoro (default)
-         or Qwen via the PODCAST_TTS_ENGINE env / the host's preferred-TTS setting. -->
-    <PackageReference Include="ElBruno.QwenTTS" Version="1.9.0" />
     <!-- RSS/Atom parsing for the international news feeds (managed-only, no natives). -->
     <PackageReference Include="System.ServiceModel.Syndication" Version="9.0.5" />
   </ItemGroup>

@@ -21,29 +21,12 @@ internal static class PodcastTts
     private static KokoroWavSynthesizer? _synth;
     private static List<string> _voices = new();
     private static string? _unavailableReason;
-    private static string? _preferredEngine;
 
-    /// <summary>The TTS engine the podcast uses: "kokoro" (default — in-process, ~325 MB model)
-    /// or "qwen" (Qwen3-TTS — ~5.5 GB model auto-downloaded on first use). Selected from the
-    /// PODCAST_TTS_ENGINE environment variable ("qwen") or set programmatically (the host's
-    /// preferred-TTS setting flows here).</summary>
-    internal static string PreferredEngine
-    {
-        get
-        {
-            if (_preferredEngine == null)
-                _preferredEngine = string.Equals(Environment.GetEnvironmentVariable("PODCAST_TTS_ENGINE"), "qwen", StringComparison.OrdinalIgnoreCase) ? "qwen" : "kokoro";
-            return _preferredEngine;
-        }
-        set => _preferredEngine = string.Equals(value, "qwen", StringComparison.OrdinalIgnoreCase) ? "qwen" : "kokoro";
-    }
-
-    /// <summary>True when the selected engine could be initialized (model + voices present).</summary>
+    /// <summary>True when the engine could be initialized (model + voices present).</summary>
     internal static bool IsAvailable
     {
         get
         {
-            if (PreferredEngine == "qwen") return PodcastQwenTts.IsAvailable;
             EnsureInitialized(); return _synth != null;
         }
     }
@@ -53,24 +36,17 @@ internal static class PodcastTts
     {
         get
         {
-            if (PreferredEngine == "qwen") return PodcastQwenTts.UnavailableReason;
             EnsureInitialized(); return _unavailableReason ?? "TTS not initialized";
         }
     }
 
-    /// <summary>Sample rate of the synthesized 16-bit mono PCM (both engines output 24 kHz).</summary>
+    /// <summary>Sample rate of the synthesized 16-bit mono PCM (24 kHz).</summary>
     internal static int SampleRate => KokoroPlayback.waveFormat.SampleRate;
 
     /// <summary>Synthesizes a sentence to raw 16-bit PCM (24 kHz mono). Null when the engine
     /// is unavailable; empty for empty text.</summary>
     internal static byte[]? SynthesizePcm(string text, string? lang)
     {
-        if (PreferredEngine == "qwen")
-        {
-            var qwen = PodcastQwenTts.SynthesizePcm(text, lang);
-            if (qwen != null) return qwen;
-            // Qwen unavailable or failed — fall back to Kokoro so the episode still records.
-        }
         EnsureInitialized();
         if (_synth == null) return null;
         text = NormalizeForTts(text, lang);

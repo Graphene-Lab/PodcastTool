@@ -52,12 +52,7 @@ internal static class PodcastConfig
     private const string DefaultJson = """
         {
           "durationMinutes": 30,
-          "_comment": "Episode duration in minutes (default 30 = 2 min intro+closing stinger + 28 min of acts). The per-act lengths and the research budget are derived deterministically from this value — changing it needs no code changes.",
-          "qwenTts": {
-            "_comment": "Qwen3-TTS voice behavior (the 0.6B model has no instruction control, so neutrality comes from the sampling settings). temperature: lower = calmer, more neutral prosody (0.9 = model default; 0.5 = flat newsreader). seed: fixed = deterministic voice (same script → same audio every run); change it for a different but still reproducible prosody; set null for stochastic (the model's default behavior). The 1.7B model additionally applies a neutral 'newsreader' style instruction.",
-            "temperature": 0.5,
-            "seed": 20260830
-          }
+          "_comment": "Episode duration in minutes (default 30 = 2 min intro+closing stinger + 28 min of acts). The per-act lengths and the research budget are derived deterministically from this value — changing it needs no code changes."
         }
         """;
 
@@ -75,48 +70,6 @@ internal static class PodcastConfig
             }
             catch { }
             return 30;
-        }
-    }
-
-    /// <summary>Qwen3-TTS sampling temperature (default 0.5 — a flat, neutral newsreader
-    /// prosody; 0.9 is the model default and sounds more emotional/random).</summary>
-    internal static float QwenTemperature
-    {
-        get
-        {
-            try
-            {
-                var json = TryLoad();
-                if (json != null && json.RootElement.TryGetProperty("qwenTts", out var q)
-                    && q.ValueKind == JsonValueKind.Object && q.TryGetProperty("temperature", out var t)
-                    && t.ValueKind == JsonValueKind.Number && t.TryGetSingle(out var temperature)
-                    && temperature is > 0f and <= 2f)
-                    return temperature;
-            }
-            catch { }
-            return 0.5f;
-        }
-    }
-
-    /// <summary>Qwen3-TTS sampling seed (default 20260830 — deterministic voice: the same
-    /// script always produces the same audio). Null (JSON <c>null</c>) keeps the model's
-    /// stochastic prosody.</summary>
-    internal static int? QwenSeed
-    {
-        get
-        {
-            try
-            {
-                var json = TryLoad();
-                if (json != null && json.RootElement.TryGetProperty("qwenTts", out var q)
-                    && q.ValueKind == JsonValueKind.Object && q.TryGetProperty("seed", out var s))
-                {
-                    if (s.ValueKind == JsonValueKind.Null) return null;
-                    if (s.ValueKind == JsonValueKind.Number && s.TryGetInt32(out var seed)) return seed;
-                }
-            }
-            catch { }
-            return 20260830;
         }
     }
 
