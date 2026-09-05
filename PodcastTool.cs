@@ -50,13 +50,24 @@ public class PodcastTool : BaseAgentTool, IFileTool
             if (topic.Length > 300)
                 topic = topic.Trim()[..300];
 
-            var lang = Utility.DetectLanguage(topic) ?? "en";
+            // The episode language: the explicit parameter wins (no detection needed — the
+            // lingua detection below is only a fallback and must never be able to fail the
+            // episode when the caller already chose the language).
+            var lang = string.Empty;
             if (!string.IsNullOrWhiteSpace(language))
             {
                 var normalized = PodcastScript.NormalizeLanguage(language);
                 if (normalized == null)
                     return $"Error: the 'language' parameter must be a valid two-letter ISO code (e.g. \"en\", \"it\", \"fr\", \"es\") — received \"{language}\", which is not valid. Omit it to use the language of the topic.";
                 lang = normalized;
+            }
+            else
+            {
+                // Topic-language detection first; when it is unavailable or ambiguous (e.g. the
+                // lingua models are missing on an install) fall back to the MACHINE's UI language
+                // — never a hardcoded English default — so a podcast on a localized machine is
+                // narrated in that language whenever the engine supports it.
+                lang = Utility.DetectLanguage(topic) ?? VoiceConversation.ResolveLang(null);
             }
 
             // 1) Deterministic length model: the duration comes from the tool config
