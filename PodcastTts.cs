@@ -1,3 +1,5 @@
+using System.Globalization;
+using System.Text;
 using System.Text.RegularExpressions;
 using KokoroSharp;
 using KokoroSharp.Core;
@@ -260,7 +262,7 @@ internal static class PodcastTts
     /// the first loaded voice; null when no voice is available.</summary>
     private static KokoroVoice? ResolveVoice(string? lang)
     {
-        var target = lang ?? VoiceConversation.ResolveLang(null);
+        var target = lang ?? MachineLang();
         var prefix = target switch
         {
             "it" => "if_",
@@ -278,6 +280,20 @@ internal static class PodcastTts
             if (match != null) return KokoroVoiceManager.GetVoice(match);
         }
         return _voices.Count > 0 ? KokoroVoiceManager.GetVoice(_voices[0]) : null;
+    }
+
+    /// <summary>Plugin-local mirror of VoiceConversation.ResolveLang(null): the machine's UI
+    /// language (never a hardcoded default) — keeps the voice fallback host-independent.</summary>
+    private static string MachineLang()
+    {
+        try
+        {
+            var sys = CultureInfo.CurrentCulture.TwoLetterISOLanguageName;
+            if (sys.Length == 2 && char.IsLetter(sys[0]) && char.IsLetter(sys[1]))
+                return sys.ToLowerInvariant();
+        }
+        catch { }
+        return "en";
     }
 
     /// <summary>Locates kokoro.onnx: the app base dir (host bin) or its parent (app root).</summary>
@@ -302,5 +318,108 @@ internal static class PodcastTts
             Path.Combine(Path.GetFullPath(Path.Combine(baseDir, "..", "voices"))),
         };
         return candidates.FirstOrDefault(Directory.Exists);
+    }
+
+    /// <summary>Splits a text chunk into speakable sentences for the mixer. The speakable
+    /// conversion and the split are plugin-LOCAL mirrors of the host's VoiceConversation
+    /// helpers (frozen at the 2026-08-29 behavior): the audio path must not bind the host
+    /// copies — their signatures drifted across Graphene.AIOrchestrator releases
+    /// (SplitSentences gained a hardCeiling parameter) and a plugin built against an older
+    /// signature died at mix time with "Attempted to access a missing method".</summary>
+    internal static IEnumerable<string> SplitSpeakable(string text)
+    {
+        var speakable = ToSpeakable(text);
+        if (speakable.Length == 0) return Array.Empty<string>();
+        return SplitSentences(speakable);
+    }
+
+    /// <summary>Plugin-local mirror of VoiceConversation.ToSpeakable (markdown stripped,
+    /// emoji/symbols removed) — see <see cref="SplitSpeakable"/>.</summary>
+    internal static string ToSpeakable(string text) => FilterSpeakableChars(StripMarkdown(text));
+
+    private static string StripMarkdown(string text)
+    {
+        text = Regex.Replace(text, @"```[\s\S]*?```", "");
+        text = Regex.Replace(text, @"`([^`]+)`", "$1");
+        text = Regex.Replace(text, @"!\[([^\]]*)\]\([^)]+\)", "$1");
+        text = Regex.Replace(text, @"\[([^\]]*)\]\([^)]+\)", "$1");
+        text = Regex.Replace(text, @"\*\*\*(.+?)\*\*\*", "$1");
+        text = Regex.Replace(text, @"\*\*(.+?)\*\*", "$1");
+        text = Regex.Replace(text, @"\*(.+?)\*", "$1");
+        text = Regex.Replace(text, @"~~(.+?)~~", "$1");
+        text = Regex.Replace(text, @"^#{1,6}\s+", "", RegexOptions.Multiline);
+        text = Regex.Replace(text, @"^>\s?", "", RegexOptions.Multiline);
+        text = Regex.Replace(text, @"^[\-\*\+]\s+", "", RegexOptions.Multiline);
+        text = Regex.Replace(text, @"^\d+\.\s+", "", RegexOptions.Multiline);
+        text = Regex.Replace(text, @"^[\-\*\s_]{3,}$", "", RegexOptions.Multiline);
+        text = Regex.Replace(text, @"\|-+\|", "");
+        text = Regex.Replace(text, @"(?<![.?!])\n", ", ");
+        text = Regex.Replace(text, @"[ \t]{2,}", " ");
+        text = FilterSpeakableChars(text);
+        text = Regex.Replace(text, @"\n{3,}", "\n\n");
+        return text.Trim();
+    }
+
+    private static string FilterSpeakableChars(string text)
+    {
+        var result = new StringBuilder(text.Length);
+        for (int i = 0; i < text.Length; i++)
+        {
+            var cat = CharUnicodeInfo.GetUnicodeCategory(text, i);
+            if (cat is UnicodeCategory.UppercaseLetter or UnicodeCategory.LowercaseLetter
+                or UnicodeCategory.TitlecaseLetter or UnicodeCategory.ModifierLetter
+                or UnicodeCategory.OtherLetter or UnicodeCategory.DecimalDigitNumber
+                or UnicodeCategory.LetterNumber or UnicodeCategory.OtherNumber
+                or UnicodeCategory.SpaceSeparator or UnicodeCategory.LineSeparator
+                or UnicodeCategory.ParagraphSeparator or UnicodeCategory.DashPunctuation
+                or UnicodeCategory.OpenPunctuation or UnicodeCategory.ClosePunctuation
+                or UnicodeCategory.InitialQuotePunctuation or UnicodeCategory.FinalQuotePunctuation
+                or UnicodeCategory.OtherPunctuation or UnicodeCategory.CurrencySymbol
+                or UnicodeCategory.MathSymbol)
+            {
+                result.Append(text[i]);
+            }
+            else if (cat == UnicodeCategory.Surrogate)
+            {
+                i++;
+            }
+        }
+        return result.ToString();
+    }
+
+    /// <summary>Splits speakable text into sentence chunks (after . ! ? only, never mid-word);
+    /// a sentence over <paramref name="maxChunk"/> chars is kept WHOLE up to the
+    /// <paramref name="hardCeiling"/> — mirror of VoiceConversation.SplitSentences.</summary>
+    internal static IEnumerable<string> SplitSentences(string text, int maxChunk = 200, int hardCeiling = 450)
+    {
+        var buf = new StringBuilder();
+        foreach (var part in Regex.Split(text, @"(?<=[.!?])(?!\d)\s*"))
+        {
+            var s = part.Trim();
+            if (s.Length == 0) continue;
+
+            if (s.Length > maxChunk)
+            {
+                if (buf.Length > 0) { yield return buf.ToString().Trim(); buf.Clear(); }
+                if (s.Length > hardCeiling)
+                {
+                    var cut = s.LastIndexOf(' ', hardCeiling);
+                    var at = cut > hardCeiling / 2 ? cut : hardCeiling;
+                    yield return s[..at].Trim();
+                    s = s[at..].TrimStart();
+                }
+                if (s.Length > 0) buf.Append(s);
+                continue;
+            }
+
+            if (buf.Length > 0 && buf.Length + s.Length + 1 > maxChunk)
+            {
+                yield return buf.ToString().Trim();
+                buf.Clear();
+            }
+            if (buf.Length > 0) buf.Append(' ');
+            buf.Append(s);
+        }
+        if (buf.Length > 0) yield return buf.ToString().Trim();
     }
 }

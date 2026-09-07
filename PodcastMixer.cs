@@ -229,10 +229,11 @@ internal static partial class PodcastMixer
     /// <summary>Synthesizes a text chunk to int16 PCM (never null — empty for unreadable text).</summary>
     private static byte[] Speak(string text, string lang)
     {
-        var speakable = VoiceConversation.ToSpeakable(text);
-        if (speakable.Length == 0) return Array.Empty<byte>();
+        // The split and the speakable conversion are plugin-local (PodcastTts.SplitSpeakable):
+        // binding the host's VoiceConversation helpers here broke older plugin builds when
+        // their signatures drifted (MissingMethodException at mix time).
         var pcm = new List<byte>();
-        foreach (var sentence in VoiceConversation.SplitSentences(speakable))
+        foreach (var sentence in PodcastTts.SplitSpeakable(text))
         {
             var bytes = PodcastTts.SynthesizePcm(sentence, lang);
             if (bytes != null && bytes.Length > 0) pcm.AddRange(bytes);
