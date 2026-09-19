@@ -30,6 +30,8 @@ internal static partial class PodcastMixer
     {
         durationSeconds = 0;
         LastError = "";
+        _sentencesDone = 0;
+        _speakWatch = System.Diagnostics.Stopwatch.StartNew();
         if (!PodcastTts.IsAvailable)
         {
             LastError = PodcastTts.UnavailableReason;
@@ -226,7 +228,11 @@ internal static partial class PodcastMixer
         return true;
     }
 
-    /// <summary>Synthesizes a text chunk to int16 PCM (never null — empty for unreadable text).</summary>
+    /// <summary>Synthesizes a text chunk to int16 PCM (never null — empty for unreadable text).
+    /// Logs progress every 20 sentences: a CPU-only synthesis of a full episode runs for tens
+    /// of minutes with no other output, which is indistinguishable from a hang without it.</summary>
+    private static int _sentencesDone;
+    private static System.Diagnostics.Stopwatch _speakWatch = System.Diagnostics.Stopwatch.StartNew();
     private static byte[] Speak(string text, string lang)
     {
         // The split and the speakable conversion are plugin-local (PodcastTts.SplitSpeakable):
@@ -237,6 +243,8 @@ internal static partial class PodcastMixer
         {
             var bytes = PodcastTts.SynthesizePcm(sentence, lang);
             if (bytes != null && bytes.Length > 0) pcm.AddRange(bytes);
+            if (++_sentencesDone % 20 == 0)
+                Log.LogStep($"PodcastMixer: synthesized {_sentencesDone} sentences ({_speakWatch.Elapsed.TotalSeconds:F0}s)");
         }
         return pcm.ToArray();
     }

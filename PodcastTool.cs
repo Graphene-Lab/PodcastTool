@@ -36,10 +36,15 @@ public class PodcastTool : BaseAgentTool, IFileTool
     /// <param name="minimizeAcronyms">When true (default) the writer expands every acronym and
     /// abbreviation to its full form ("Bitcoin" not "BTC") — TTS engines often mispronounce
     /// them. Set false when the script may keep the compact forms.</param>
+    /// <param name="durationMinutes">Optional episode length in minutes. When omitted, the tool
+    /// config (podcast.json, "durationMinutes", default 30) is used. Pass a small value (5 is
+    /// the minimum) for a short episode — without it the default 30-minute episode is produced,
+    /// which on a CPU-only machine takes a long time to synthesize. The per-act lengths are
+    /// derived from this value exactly as from the config.</param>
     /// <returns>The sandbox-relative paths of the saved MP3 (to attach to the user reply),
     /// script and podcast RSS feed, with their lengths; failures are returned as
     /// "Error: ..." with the cause.</returns>
-    public string GeneratePodcast(string topic, string? language = null, string? podcastName = null, string? contextualMaterial = null, bool minimizeAcronyms = true)
+    public string GeneratePodcast(string topic, string? language = null, string? podcastName = null, string? contextualMaterial = null, bool minimizeAcronyms = true, int? durationMinutes = null)
     {
         var sw = Stopwatch.StartNew();
         Log.LogStep($"PodcastTool: generating podcast about '{topic}' (lang={language ?? "auto"}, name={podcastName ?? "none"})");
@@ -73,8 +78,11 @@ public class PodcastTool : BaseAgentTool, IFileTool
             // 1) Deterministic length model: the duration comes from the tool config
             //    (podcast.json, "durationMinutes", default 30 = 2 min intro+closing + 28 min
             //    of acts). The per-act lengths and the research budget are DERIVED — the LLM
-            //    never decides them. Changing the duration needs no code changes.
-            var (actCount, actChars, targetChars) = PodcastLengths.Compute(PodcastConfig.DurationMinutes);
+            //    never decides them. Changing the duration needs no code changes. The
+            //    durationMinutes parameter overrides the config when the caller asks for a
+            //    specific length (floor 5 minutes, the model's minimum).
+            var minutes = durationMinutes.HasValue ? Math.Max(5, durationMinutes.Value) : PodcastConfig.DurationMinutes;
+            var (actCount, actChars, targetChars) = PodcastLengths.Compute(minutes);
             var budgetChars = targetChars * 3;           // empirical context budget: 3X
             var plan = PodcastPlanner.Plan(topic, lang, actCount, actChars);
             if (plan == null)
