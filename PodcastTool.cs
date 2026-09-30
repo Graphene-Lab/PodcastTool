@@ -5,11 +5,11 @@ using System.Runtime.CompilerServices;
 
 namespace AIOrchestrator.API;
 
-/// <summary>Creates narrated podcast episodes: plans the episode (recent-facts judgment +
-/// English research queries + three-act outline), researches the topic from recent or general
-/// sources accordingly, compresses the research into a brief, writes the narrative body and a
-/// separate welcome intro, then mixes the audio (intro → jingle → body, soft ducked background)
-/// and saves it as an MP3 under /podcast/. Files are saved under /podcast/.</summary>
+/// <summary>Create narrated podcast episodes: plan, research, write and mix an audio episode and save it as an MP3 under /podcast/.
+/// The tool plans the episode (recent-facts judgment + English research queries + three-act outline), researches the
+/// topic from recent or general sources accordingly, compresses the research into a brief, writes the narrative body
+/// and a separate welcome intro, then mixes the audio (intro → jingle → body, soft ducked background).
+/// Files are saved under /podcast/.</summary>
 public class PodcastTool : BaseAgentTool, IFileTool
 {
     /// <summary>
