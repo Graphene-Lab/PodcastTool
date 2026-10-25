@@ -10,6 +10,7 @@ namespace AIOrchestrator.API;
 /// topic from recent or general sources accordingly, compresses the research into a brief, writes the narrative body
 /// and a separate welcome intro, then mixes the audio (intro → jingle → body, soft ducked background).
 /// Files are saved under /podcast/.</summary>
+[ToolPurpose(ToolPurpose.Podcast)]
 public class PodcastTool : BaseAgentTool, IFileTool
 {
     /// <summary>
