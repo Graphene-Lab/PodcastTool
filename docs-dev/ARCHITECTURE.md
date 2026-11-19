@@ -211,7 +211,8 @@ only when no on-disk copy is found.
 The music is decoded/resampled to 48 kHz stereo with `OwnAudioSharp.Basic` `FileSource`
 (the full `OwnAudioSharp` package drags Avalonia/UI; Basic is the audio-only variant).
 The Rust native `ownaudio_ffi` must sit in the **host app base directory** — verified
-empirically: the byte-loaded plugin shim cannot resolve the native from the plugin folder —
+empirically when plugins were byte-loaded (loading is from file since 2026-09-07): the native
+could not be resolved from the plugin folder —
 so `PodcastMixer.EnsureNativeAvailable` copies the matching per-RID native from the plugin
 payload on first use (idempotent, cross-platform).
 
